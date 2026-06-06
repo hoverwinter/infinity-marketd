@@ -79,7 +79,7 @@ get_security_count(market)
 - 已实现请求包构造。
 - 已实现响应解析。
 - 当前支持 `sh` / `sz`。
-- `bj` 需要验证 TDX market mapping 后再支持。
+- 已探测 `bj` market byte `2`，但证券数量请求未返回可用列表，当前仍不启用 `bj` discovery。
 
 相关代码：
 
@@ -115,7 +115,7 @@ get_security_list(market, start)
 `marketd` 状态：
 
 - 已实现 `sh` / `sz` 证券列表请求和解析。
-- 名称字段当前未做 GBK 解码，非 UTF-8 会置空。
+- 名称字段按 GB18030/GBK 解码，裁剪尾部 `\0` / 空格；解码失败时仅置空名称，不影响代码发现。
 - `bj` 证券列表是否走同一路径需要验证。
 
 相关代码：
@@ -158,7 +158,8 @@ get_security_quotes([(market, code), ...])
 - 支持失败自动重试。
 - 支持批量请求和连接复用。
 - 支持 `quote` CLI。
-- `bj` 当前明确拒绝，已有 OpenSpec change 跟踪验证和支持工作。
+- 支持 `bj` 实时 quote，已验证 `920*` 使用 TDX market byte `2`；含 `bj` 的请求会保守拆成单只请求。
+- `8*` / `4*` 代码按 `bj` 请求，但如果 server 返回不匹配 fallback，客户端会拒绝该响应。
 
 相关代码：
 
@@ -183,6 +184,19 @@ get_index_bars
 - 获取股票或指数 K 线。
 - 支持不同周期，例如 1 分钟、5 分钟、日线、周线、月线等，具体取决于 TDX 协议 category。
 
+分页语义：
+
+- `count` 是单次请求返回的 K 线根数，TDX/pytdx 文档约定最大值为 800。
+- `start` 是从最近一根可见 K 线向历史方向偏移的 bar 位置，不是日期。
+- 获取超过 800 根历史 K 线时，应固定 `count <= 800`，按 `start=0,800,1600,...` 分页。
+- 800 是单次请求页大小限制，不是“最近 800 天”或“服务器只保留 800 根”的历史窗口限制。
+
+2026-06-07 验证记录：
+
+- `180.153.18.170:7709` 上，`sh:600519` 日 K 使用 `category=9` 可从 `start=0` 翻页到 `start=5600`，覆盖 `2001-08-27` 至 `2026-06-05`。
+- 同一 server 上，`sz:000001` 日 K 可从 `start=0` 翻页到 `start=8000`，覆盖 `1991-04-03` 至 `2026-06-05`。
+- 因此远程 K 线导入实现不应把 `count` 放大到 800 以上，而应实现分页、去重和区间截断。
+
 `marketd` 状态：
 
 - 在线 K 线未实现。
@@ -206,6 +220,14 @@ get_history_minute_time_data
 
 - 分时线通常是 `price + volume` point。
 - 它不等同于 1 分钟 OHLCV K 线。
+- 历史分时按单个 `YYYYMMDD` 日期请求，通常每个完整 A 股交易日最多返回 240 个点。
+- 历史分时覆盖不等于任意日期保证可用；非交易日、上市前日期、server 未保留或不可服务的日期可能返回空。
+- 实测 TDX server 可返回远早于最近 800 天的历史分时，但实现必须以实际返回为空/非空为准。
+
+2026-06-07 验证记录：
+
+- `180.153.18.170:7709` 和 `60.191.117.167:7709` 上，`sh:600519` 的 `2001-08-27` 历史分时均返回 240 个点。
+- `180.153.18.170:7709` 上，`sh:600519` 的 `2001-08-24`（上市前）和 `2024-06-08`（周六）返回空。
 
 `marketd` 状态：
 
@@ -326,9 +348,13 @@ get_block_info
 
 - 已实现独立 `exhq` TCP client。
 - 已实现扩展市场列表。
+- 已实现 instrument count/list。
 - 已实现单个扩展品种实时行情。
-- 未实现 instrument count/list、K 线、分时、分笔和历史接口。
+- 已实现 K 线、分时、分笔、历史分时、历史分笔和历史 K 线范围读取接口。
+- 暂不持久化扩展行情。
 - 独立于标准 A 股 `hq` client，不混用 market mapping 和响应解析。
+
+2026-06-07 live 探测结果显示，public ExHQ server 能力不完全一致：部分节点只返回 `instrument count`，`47.102.108.214:7727` 可返回 `instrument list`，但 quote/K 线/分时/分笔在所测 public 节点上出现 timeout 或 connection reset。非交易日维护、节点能力差异和公开访问限制都可能影响可用性。
 
 ## marketd 当前覆盖矩阵
 
@@ -338,10 +364,10 @@ get_block_info
 | `hq` 多 server 重试 | 已实现 |
 | `hq` 批量 quote 连接复用 | 已实现 |
 | `hq` `sh` / `sz` 实时行情 | 已实现 |
-| `hq` `bj` 实时行情 | 未实现，OpenSpec 已 propose |
+| `hq` `bj` 实时行情 | 已实现，已验证 `920*` / market byte `2` |
 | `hq` `sh` / `sz` 证券数量 | 已实现 |
-| `hq` `sh` / `sz` 证券列表 | 已实现，名称 GBK 解码待补 |
-| `hq` `bj` 证券列表 | 未实现，待验证 |
+| `hq` `sh` / `sz` 证券列表 | 已实现，名称按 GB18030/GBK 解码 |
+| `hq` `bj` 证券列表 | 未实现，market byte `2` count/list 探测未返回可用列表 |
 | `hq` 在线 K 线 | 未实现 |
 | `hq` 在线分时 | 未实现 |
 | `hq` 在线分笔 | 未实现 |
@@ -351,7 +377,8 @@ get_block_info
 | `hq` 板块信息 | 未实现 |
 | `exhq` 扩展市场列表 | 已实现 |
 | `exhq` 单品种实时行情 | 已实现 |
-| `exhq` 品种列表 / K 线 / 分时 / 分笔 / 历史 | 未实现 |
+| `exhq` 品种数量 / 品种列表 | 已实现 |
+| `exhq` K 线 / 分时 / 分笔 / 历史 | 已实现读取接口，不持久化；public server live 可用性待持续验证 |
 
 ## 实现注意事项
 
@@ -383,7 +410,15 @@ marketd quote --server A --server B
 
 ```bash
 marketd exquote-markets --server A
+marketd exquote-count --server A
+marketd exquote-instruments --start 0 --count 100 --server A
 marketd exquote --market 47 --code IF1709 --server A
+marketd exquote-bars --market 47 --code ICL0 --category 4 --start 0 --count 100 --server A
+marketd exquote-minute --market 47 --code ICL0 --server A
+marketd exquote-history-minute --market 47 --code ICL0 --date 20260605 --server A
+marketd exquote-transactions --market 47 --code ICL0 --start 0 --count 1800 --server A
+marketd exquote-history-transactions --market 47 --code ICL0 --date 20260605 --start 0 --count 1800 --server A
+marketd exquote-history-bars --market 74 --code BABA --start-date 20260601 --end-date 20260605 --server A
 ```
 
 ### 协议稳定性
@@ -417,8 +452,7 @@ TDX server 数据适合：
 
 优先级较高：
 
-- 支持北交所 `bj` 实时行情。
-- 给证券列表名称增加 GBK/GB18030 解码。
+- 继续验证北交所 `bj` 证券列表 discovery 和多条 quote response parser。
 - 增加在线 K 线接口。
 - 增加除权除息接口，用于复权和日线派生计算。
 - 增加板块信息接口，用于市场分组和扫描。

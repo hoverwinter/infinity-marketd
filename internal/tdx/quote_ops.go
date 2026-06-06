@@ -9,7 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 const defaultQuoteBatchSize = 80
@@ -162,6 +163,9 @@ func (s *QuoteSession) Fetch(requests []QuoteRequest) ([]Quote, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode TDX HQ quote response from %s: %w", s.server, err)
 	}
+	if err := validateQuoteResponseMatchesRequest(requests, quotes); err != nil {
+		return nil, fmt.Errorf("TDX HQ quote response from %s: %w", s.server, err)
+	}
 	return quotes, nil
 }
 
@@ -197,6 +201,9 @@ func FetchRealtimeQuoteBatches(ctx context.Context, requests []QuoteRequest, opt
 	batchSize := opts.BatchSize
 	if batchSize <= 0 {
 		batchSize = defaultQuoteBatchSize
+	}
+	if containsBeijingQuote(requests) {
+		batchSize = 1
 	}
 	batches := SplitQuoteRequests(requests, batchSize)
 	var attempts []string
@@ -248,6 +255,35 @@ func SplitQuoteRequests(requests []QuoteRequest, batchSize int) [][]QuoteRequest
 		requests = requests[n:]
 	}
 	return batches
+}
+
+func containsBeijingQuote(requests []QuoteRequest) bool {
+	for _, request := range requests {
+		if request.Market == "bj" {
+			return true
+		}
+	}
+	return false
+}
+
+func validateQuoteResponseMatchesRequest(requests []QuoteRequest, quotes []Quote) error {
+	if len(quotes) != len(requests) {
+		return fmt.Errorf("expected %d quote(s), got %d", len(requests), len(quotes))
+	}
+	for i, req := range requests {
+		if quotes[i].Market == req.Market && quotes[i].Symbol == req.Symbol {
+			continue
+		}
+		return fmt.Errorf(
+			"quote %d identity mismatch: requested %s:%s, got %s:%s",
+			i,
+			req.Market,
+			req.Symbol,
+			quotes[i].Market,
+			quotes[i].Symbol,
+		)
+	}
+	return nil
 }
 
 func FetchSecurityList(ctx context.Context, market string, opts QuoteClientOptions) ([]Security, error) {
@@ -330,11 +366,7 @@ func DecodeSecurityListResponse(market string, body []byte) ([]Security, error) 
 		}
 		record := body[pos : pos+29]
 		code := strings.TrimRight(string(record[0:6]), "\x00")
-		nameBytes := record[8:16]
-		name := strings.TrimRight(string(nameBytes), "\x00")
-		if !utf8.ValidString(name) {
-			name = ""
-		}
+		name := decodeSecurityName(record[8:16])
 		preClose := decodeTDXFloat(binary.LittleEndian.Uint32(record[21:25]))
 		if len(code) == 6 && allDigits(code) {
 			securities = append(securities, Security{
@@ -349,6 +381,39 @@ func DecodeSecurityListResponse(market string, body []byte) ([]Security, error) 
 		pos += 29
 	}
 	return securities, nil
+}
+
+func decodeSecurityName(raw []byte) string {
+	raw = bytesTrimRight(raw, 0x00, ' ')
+	if len(raw) == 0 {
+		return ""
+	}
+	name, err := simplifiedchinese.GB18030.NewDecoder().String(string(raw))
+	if err != nil {
+		return ""
+	}
+	if strings.ContainsRune(name, '\uFFFD') {
+		return ""
+	}
+	return strings.TrimRight(name, " ")
+}
+
+func bytesTrimRight(raw []byte, cutset ...byte) []byte {
+	end := len(raw)
+	for end > 0 {
+		match := false
+		for _, b := range cutset {
+			if raw[end-1] == b {
+				match = true
+				break
+			}
+		}
+		if !match {
+			break
+		}
+		end--
+	}
+	return raw[:end]
 }
 
 func QuoteSweep(ctx context.Context, opts QuoteSweepOptions) ([]Quote, error) {
@@ -405,10 +470,14 @@ func applyQuoteDate(quotes []Quote, tradeDate time.Time, loc *time.Location) {
 }
 
 func marketCodeForStandardHQ(market string) int {
-	if strings.ToLower(strings.TrimSpace(market)) == "sh" {
+	switch strings.ToLower(strings.TrimSpace(market)) {
+	case "sh":
 		return tdxMarketSH
+	case "bj":
+		return tdxMarketBJ
+	default:
+		return tdxMarketSZ
 	}
-	return tdxMarketSZ
 }
 
 func isDecodeError(err error) bool {

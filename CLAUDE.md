@@ -12,8 +12,10 @@ go run ./cmd/marketd bootstrap --config configs/config.yaml
 go run ./cmd/marketd status --config configs/config.yaml
 go run ./cmd/marketd import-tdx-day --root ~/tdx-data --code 600519 --dry-run   # also import-tdx-1m / -5m
 go run ./cmd/marketd quote --symbol sh:600519 --server 180.153.18.170:7709
-go run ./cmd/marketd exquote-markets --server 61.152.107.141:7727
-go run ./cmd/marketd exquote --market 47 --code IF1709 --server 61.152.107.141:7727
+go run ./cmd/marketd exquote-count --server 112.74.214.43:7727
+go run ./cmd/marketd exquote-instruments --start 0 --count 20 --server 47.102.108.214:7727
+go run ./cmd/marketd exquote --market 47 --code ICL0 --server 47.102.108.214:7727
+go run ./cmd/marketd exquote-bars --market 47 --code ICL0 --category 4 --start 0 --count 100 --server 47.102.108.214:7727
 
 # Query service + client (infinity, read plane)
 make serve                 # go run ./cmd/infinity querier serve (CONFIG/LISTEN overridable)

@@ -154,6 +154,7 @@ go run ./cmd/marketd quote \
 实现行为：
 
 - 将请求 symbol 按 batch size 切分。
+- 如果请求中包含 `bj`，当前会保守拆成单只请求；已验证 live `bj` 单只 quote 正常，live 多条 response 解析仍需单独完善。
 - 每个 server candidate 打开一个 setup 完成后的 `QuoteSession`。
 - 同一个 server 上的多个 batch 复用同一条 TCP 连接。
 - 批量 workflow 结束后关闭连接。
@@ -198,7 +199,7 @@ go run ./cmd/marketd quote-sweep \
 | --- | --- |
 | `market` | `sh` 或 `sz` |
 | `symbol` | 六位证券代码 |
-| `name` | 证券名称，无法安全解码时为空 |
+| `name` | 证券名称，按 GB18030/GBK 解码；无法安全解码时为空 |
 | `volunit` | TDX volume unit |
 | `decimal_point` | 小数位 |
 | `pre_close` | TDX 编码中的前收字段 |
@@ -211,7 +212,19 @@ go run ./cmd/marketd quote-sweep \
 
 ```bash
 go run ./cmd/marketd exquote-markets \
-  --server 61.152.107.141:7727
+  --server 47.102.108.214:7727
+```
+
+查询扩展品种数量和列表：
+
+```bash
+go run ./cmd/marketd exquote-count \
+  --server 112.74.214.43:7727
+
+go run ./cmd/marketd exquote-instruments \
+  --start 0 \
+  --count 100 \
+  --server 47.102.108.214:7727
 ```
 
 查询单个扩展品种 quote：
@@ -219,8 +232,36 @@ go run ./cmd/marketd exquote-markets \
 ```bash
 go run ./cmd/marketd exquote \
   --market 47 \
-  --code IF1709 \
-  --server 61.152.107.141:7727
+  --code ICL0 \
+  --server 47.102.108.214:7727
+```
+
+查询 K 线、分时、分笔和历史接口：
+
+```bash
+go run ./cmd/marketd exquote-bars \
+  --market 47 --code ICL0 --category 4 --start 0 --count 100 \
+  --server 47.102.108.214:7727
+
+go run ./cmd/marketd exquote-minute \
+  --market 47 --code ICL0 \
+  --server 47.102.108.214:7727
+
+go run ./cmd/marketd exquote-history-minute \
+  --market 47 --code ICL0 --date 20260605 \
+  --server 47.102.108.214:7727
+
+go run ./cmd/marketd exquote-transactions \
+  --market 47 --code ICL0 --start 0 --count 1800 \
+  --server 47.102.108.214:7727
+
+go run ./cmd/marketd exquote-history-transactions \
+  --market 47 --code ICL0 --date 20260605 --start 0 --count 1800 \
+  --server 47.102.108.214:7727
+
+go run ./cmd/marketd exquote-history-bars \
+  --market 74 --code BABA --start-date 20260601 --end-date 20260605 \
+  --server 47.102.108.214:7727
 ```
 
 `exquote` 输出单个 JSON object，字段包括：
@@ -239,21 +280,26 @@ go run ./cmd/marketd exquote \
 | `chicang` | 持仓类字段 |
 | `bids` / `asks` | 五档买卖盘 |
 
-当前 `exhq` 只实现：
+当前 `exhq` 已实现：
 
 - market list；
+- instrument count/list；
 - single instrument quote；
+- K 线；
+- 分时；
+- 分笔；
+- 历史分时；
+- 历史分笔；
+- 历史 K 线范围；
 - 多 server candidate 顺序 fallback；
 - JSON CLI 输出。
 
 当前 `exhq` 不实现：
 
-- instrument count/list；
-- K 线；
-- 分时；
-- 分笔；
-- 历史接口；
+- Level-2 认证行情；
 - ClickHouse 持久化。
+
+公共 ExHQ server 可用性不稳定。2026-06-07 实测：`112.74.214.43:7727`、`120.25.218.6:7727`、`47.102.108.214:7727`、`116.205.143.214:7727`、`124.71.223.19:7727` 可建立 TCP，其中多台能返回 instrument count，`47.102.108.214:7727` 能返回 instrument list；但 quote/K 线/分时/分笔请求在这些节点上出现 timeout 或 connection reset。非交易日维护、节点能力差异和公开访问限制都可能导致这种现象。
 
 ### 时间字段语义
 
@@ -299,13 +345,14 @@ go run ./cmd/marketd quote \
 
 ### `bj` 和 `exhq` 边界
 
-当前标准行情实现只支持 `sh` / `sz`。
+当前标准行情实现支持 `sh` / `sz`，并支持已验证的 `bj` 单只 quote。
 
 `bj`：
 
-- 当前仍明确拒绝。
-- 原因是 TDX 标准行情下的北交所 market mapping 和 live sample 解码尚未验证。
-- 不在未验证前伪实现。
+- 已验证 TDX 标准行情 quote market byte 为 `2`。
+- `bj:920001`、`920001`、`920799` 在 `60.191.117.167:7709` 和 `180.153.18.170:7709` 上返回 `market=bj` 的标准 quote response。
+- `920*`、`8*`、`4*` 会按本地市场推断映射到 `bj`；如果 server 返回不匹配的 fallback 代码，客户端会用 response identity 校验拒绝该结果。
+- 证券数量/证券列表的 market byte `2` 在已探测 server 上未返回可用列表，因此 `quote-sweep --market bj` 仍不启用在线发现。
 
 `exhq`：
 
@@ -614,7 +661,7 @@ item_count * 29-byte record
 | --- | --- |
 | `symbol` | `record[0:6]` |
 | `volunit` | `record[6:8]` |
-| `name` | `record[8:16]`，当前只在 UTF-8 有效时保留 |
+| `name` | `record[8:16]`，固定 8 字节字段，先裁剪尾部 `\0` / 空格，再按 GB18030/GBK 解码 |
 | `decimal_point` | `record[20]` |
 | `pre_close` | `record[21:25]`，TDX float-like 解码 |
 
@@ -626,8 +673,9 @@ item_count * 29-byte record
 
 1. TCP connect。
 2. 设置 deadline。
-3. 发送一个 TDX 扩展行情 setup 包。
-4. 返回可复用的 `ExQuoteSession`。
+3. 返回可复用的 `ExQuoteSession`。
+
+pytdx 保留了一个 ExHQ setup 包，但 2026-06-07 实测多个当前可 TCP 连接的 public ExHQ server 对 setup 包不返回协议头，而能直接响应 instrument count 等业务包。因此当前 Go 实现默认不发送 setup 包。
 
 扩展市场列表请求包：
 
@@ -666,6 +714,36 @@ uint32 ask_vol1..ask_vol5
 
 `exhq` quote 价格字段是普通 `float32`，不同于标准 `hq` A 股 quote 的变长整数差分编码。
 
+扩展品种数量请求：
+
+```text
+01 03 48 66 00 01 02 00 02 00 f0 23
+```
+
+扩展品种列表请求：
+
+```text
+01 04 48 67 00 01 08 00 08 00 f5 23
+uint32 start
+uint16 count
+```
+
+扩展 K 线请求：
+
+```text
+01 01 08 6a 01 01 16 00 16 00 ff 23
+uint8 market
+char[9] code
+uint16 category
+uint16 unknown = 1
+uint32 start
+uint16 count
+```
+
+`category` 使用 TDX/pytdx 的数字周期：`0=5m`、`1=15m`、`2=30m`、`3=1h`、`4=day`、`5=week`、`6=month`、`7=ExHQ 1m`、`8=1m`、`9=day`、`10=quarter`、`11=year`。
+
+分时、分笔和历史接口也按 pytdx ExHQ parser 的固定包实现；这些命令只读取并输出 JSON，不做落库。
+
 ### CLI 错误处理
 
 参数错误返回 exit code `2`：
@@ -679,7 +757,6 @@ uint32 ask_vol1..ask_vol5
 
 - 所有 server candidates 都失败。
 - TCP connect 超时。
-- setup 失败。
 - 请求收发失败。
 - 响应截断。
 - zlib 解压失败。
@@ -737,7 +814,19 @@ go run ./cmd/marketd quote-sweep \
 
 ```bash
 go run ./cmd/marketd exquote-markets \
-  --server 61.152.107.141:7727
+  --server 47.102.108.214:7727
+```
+
+扩展品种列表：
+
+```bash
+go run ./cmd/marketd exquote-count \
+  --server 112.74.214.43:7727
+
+go run ./cmd/marketd exquote-instruments \
+  --start 0 \
+  --count 20 \
+  --server 47.102.108.214:7727
 ```
 
 扩展品种 quote：
@@ -745,34 +834,57 @@ go run ./cmd/marketd exquote-markets \
 ```bash
 go run ./cmd/marketd exquote \
   --market 47 \
-  --code IF1709 \
-  --server 61.152.107.141:7727
+  --code ICL0 \
+  --server 47.102.108.214:7727
 ```
 
-负向验证：
+扩展 K 线 / 分时 / 分笔：
+
+```bash
+go run ./cmd/marketd exquote-bars \
+  --market 47 --code ICL0 --category 4 --start 0 --count 100 \
+  --server 47.102.108.214:7727
+
+go run ./cmd/marketd exquote-minute \
+  --market 47 --code ICL0 \
+  --server 47.102.108.214:7727
+
+go run ./cmd/marketd exquote-transactions \
+  --market 47 --code ICL0 --start 0 --count 1800 \
+  --server 47.102.108.214:7727
+```
+
+北交所实时行情：
 
 ```bash
 go run ./cmd/marketd quote --symbol bj:920001
 ```
 
-预期：返回 unsupported market 错误。
+显式北交所 symbol list 也可走 `quote-sweep`，但当前会拆成单只请求：
+
+```bash
+go run ./cmd/marketd quote-sweep \
+  --symbol 920001,bj:920799 \
+  --server 60.191.117.167:7709
+```
 
 ## 当前限制
 
-- 不支持 `bj` 实时行情。
-- `exhq` 只支持 market list 和 single instrument quote。
-- `exhq` 市场名称目前没有做 GBK 解码，非 UTF-8 名称会置空。
+- `bj` 实时行情支持已验证的 `920*` quote；旧 `8*` / `4*` 代码会按 `bj` 请求，但实际可用性取决于 server 是否仍提供该代码，返回不匹配时会报 identity mismatch。
+- `bj` 证券数量/证券列表尚未可用，`quote-sweep --market bj` 仍会返回 unsupported security-list market。
+- 含 `bj` 的 quote request 当前强制单只分包；live 多条 response 解析需要单独完善后再放开批量。
+- `exhq` public server 可用性不稳定；metadata 可用不代表 quote/K 线/分时/分笔也可用。
+- `exhq` 文本字段已按 GB18030/GBK fallback 解码；解码失败时置空展示字段，不丢弃 market/code。
 - 不做长期心跳保活。
 - 不做全局连接池。
 - 不做实时流式订阅。
 - 不写 ClickHouse。
-- 证券名称目前没有做 GBK 解码，非 UTF-8 名称会置空。
+- 标准 `hq` 证券列表名称已按 GB18030/GBK 解码；解码失败时只置空 `name`，不丢弃代码。
 - `quote_time` 只有调用方显式提供 `--trade-date` 时才输出。
 
 ## 后续方向
 
-- 验证北交所实时行情的真实 TDX market mapping 和响应样本。
-- 补齐 `exhq` instrument list、K 线、分时、分笔和历史接口。
-- 为证券列表名称增加 GBK 解码。
+- 继续验证 `bj` 证券列表 discovery，以及 live 多条 quote response 的完整 parser 边界。
+- 给 `exhq` 增加专门的 server probe 命令，区分 count/list/quote/K 线等能力。
 - 如果需要长期运行的行情服务，再引入连接池、心跳和定期重连。
 - 如果需要持久化 quote snapshot，另起 OpenSpec change 定义 ClickHouse schema、保留策略和去重语义。

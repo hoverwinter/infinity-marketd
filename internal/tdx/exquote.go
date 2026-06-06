@@ -12,10 +12,13 @@ import (
 	"unicode/utf8"
 )
 
-const DefaultExHQServer = "61.152.107.141:7727"
+const DefaultExHQServer = "112.74.214.43:7727"
 
 var DefaultExHQServers = []string{
 	DefaultExHQServer,
+	"120.25.218.6:7727",
+	"47.102.108.214:7727",
+	"61.152.107.141:7727",
 	"121.14.110.210:7727",
 }
 
@@ -134,10 +137,6 @@ func OpenExQuoteSession(ctx context.Context, server string, timeout time.Duratio
 		conn:    conn,
 		client:  quoteConn{rw: conn},
 	}
-	if _, err := session.call(exHQSetupPacket); err != nil {
-		_ = session.Close()
-		return nil, fmt.Errorf("TDX ExHQ setup %s: %w", server, err)
-	}
 	return session, nil
 }
 
@@ -254,8 +253,8 @@ func DecodeExMarketListResponse(body []byte) ([]ExMarket, error) {
 			markets = append(markets, ExMarket{
 				Market:    market,
 				Category:  category,
-				Name:      cleanUTF8CString(record[1:33]),
-				ShortName: cleanUTF8CString(record[34:36]),
+				Name:      decodeExCString(record[1:33]),
+				ShortName: decodeExCString(record[34:36]),
 			})
 		}
 		pos += 64

@@ -18,6 +18,7 @@ const (
 
 	tdxMarketSZ = 0
 	tdxMarketSH = 1
+	tdxMarketBJ = 2
 )
 
 var DefaultHQServers = []string{
@@ -94,7 +95,7 @@ func ParseQuoteRequest(input string) (QuoteRequest, error) {
 	if market == "" {
 		market = InferMarketFromCode(symbol)
 	}
-	if market != "sh" && market != "sz" {
+	if market != "sh" && market != "sz" && market != "bj" {
 		return QuoteRequest{}, fmt.Errorf("unsupported realtime quote market %q", market)
 	}
 	if len(symbol) != 6 || !allDigits(symbol) {
@@ -123,16 +124,24 @@ func BuildQuoteRequestPacket(requests []QuoteRequest) []byte {
 	binary.LittleEndian.PutUint16(packet[20:22], uint16(len(requests)))
 
 	for _, req := range requests {
-		marketCode := tdxMarketSZ
-		if req.Market == "sh" {
-			marketCode = tdxMarketSH
-		}
+		marketCode := quoteMarketCode(req.Market)
 		packet = append(packet, byte(marketCode))
 		code := make([]byte, 6)
 		copy(code, req.Symbol)
 		packet = append(packet, code...)
 	}
 	return packet
+}
+
+func quoteMarketCode(market string) int {
+	switch strings.ToLower(strings.TrimSpace(market)) {
+	case "sh":
+		return tdxMarketSH
+	case "bj":
+		return tdxMarketBJ
+	default:
+		return tdxMarketSZ
+	}
 }
 
 func DecodeQuoteResponse(body []byte) ([]Quote, error) {
@@ -383,6 +392,8 @@ func quoteMarketName(market int) (string, error) {
 		return "sz", nil
 	case tdxMarketSH:
 		return "sh", nil
+	case tdxMarketBJ:
+		return "bj", nil
 	default:
 		return "", fmt.Errorf("unsupported TDX quote market code %d", market)
 	}

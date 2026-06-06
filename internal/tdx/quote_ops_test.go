@@ -78,6 +78,67 @@ func TestFetchRealtimeQuotesAddsExplicitTradeDate(t *testing.T) {
 	}
 }
 
+func TestFetchRealtimeQuotesSupportsBeijingMarket(t *testing.T) {
+	request := QuoteRequest{Market: "bj", Symbol: "920001"}
+	server := startScriptedHQServer(t, append(setupSteps(), scriptStep{
+		ReadLen: len(BuildQuoteRequestPacket([]QuoteRequest{request})),
+		Body:    quoteResponseBodyFor(tdxMarketBJ, "920001"),
+	}))
+	quotes, err := FetchRealtimeQuotes(context.Background(), []QuoteRequest{request}, QuoteClientOptions{
+		Server:  server,
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quotes) != 1 || quotes[0].Market != "bj" || quotes[0].Symbol != "920001" {
+		t.Fatalf("quotes = %#v", quotes)
+	}
+}
+
+func TestFetchRealtimeQuotesSplitsBeijingRequestsSingly(t *testing.T) {
+	requests := []QuoteRequest{
+		{Market: "bj", Symbol: "920001"},
+		{Market: "bj", Symbol: "920799"},
+	}
+	server := startScriptedHQServer(t, append(setupSteps(),
+		scriptStep{
+			ReadLen: len(BuildQuoteRequestPacket(requests[:1])),
+			Body:    quoteResponseBodyFor(tdxMarketBJ, "920001"),
+		},
+		scriptStep{
+			ReadLen: len(BuildQuoteRequestPacket(requests[1:])),
+			Body:    quoteResponseBodyFor(tdxMarketBJ, "920799"),
+		},
+	))
+	quotes, err := FetchRealtimeQuotes(context.Background(), requests, QuoteClientOptions{
+		Server:    server,
+		Timeout:   time.Second,
+		BatchSize: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quotes) != 2 || quotes[0].Symbol != "920001" || quotes[1].Symbol != "920799" {
+		t.Fatalf("quotes = %#v", quotes)
+	}
+}
+
+func TestFetchRealtimeQuotesRejectsMismatchedResponse(t *testing.T) {
+	request := QuoteRequest{Market: "bj", Symbol: "920001"}
+	server := startScriptedHQServer(t, append(setupSteps(), scriptStep{
+		ReadLen: len(BuildQuoteRequestPacket([]QuoteRequest{request})),
+		Body:    quoteResponseBody(),
+	}))
+	_, err := FetchRealtimeQuotes(context.Background(), []QuoteRequest{request}, QuoteClientOptions{
+		Server:  server,
+		Timeout: time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), "identity mismatch") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestSplitQuoteRequests(t *testing.T) {
 	requests := []QuoteRequest{
 		{Market: "sh", Symbol: "600001"},
@@ -111,6 +172,67 @@ func TestDecodeSecurityListResponse(t *testing.T) {
 	}
 }
 
+func TestDecodeSecurityListResponseDecodesGB18030Name(t *testing.T) {
+	body := securityListBody([]securityRecord{
+		{
+			Code:         "600519",
+			NameBytes:    []byte{0xb9, 0xf3, 0xd6, 0xdd, 0xc3, 0xa9, 0xcc, 0xa8},
+			VolUnit:      100,
+			DecimalPoint: 2,
+		},
+	})
+	securities, err := DecodeSecurityListResponse("sh", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(securities) != 1 {
+		t.Fatalf("securities = %#v", securities)
+	}
+	if securities[0].Name != "贵州茅台" {
+		t.Fatalf("name = %q", securities[0].Name)
+	}
+}
+
+func TestDecodeSecurityListResponseTrimsNamePadding(t *testing.T) {
+	body := securityListBody([]securityRecord{
+		{Code: "600519", Name: "ABC", VolUnit: 100, DecimalPoint: 2},
+		{Code: "600520", NameBytes: []byte{'A', 'B', 'C', ' ', ' ', ' ', ' ', ' '}, VolUnit: 100, DecimalPoint: 2},
+	})
+	securities, err := DecodeSecurityListResponse("sh", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(securities) != 2 {
+		t.Fatalf("securities = %#v", securities)
+	}
+	if securities[0].Name != "ABC" || securities[1].Name != "ABC" {
+		t.Fatalf("names = %#v", securities)
+	}
+}
+
+func TestDecodeSecurityListResponseToleratesMalformedName(t *testing.T) {
+	body := securityListBody([]securityRecord{
+		{Code: "600519", NameBytes: []byte{0xff, 0xff, 0xff, 0xff}, VolUnit: 100, DecimalPoint: 2},
+	})
+	securities, err := DecodeSecurityListResponse("sh", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(securities) != 1 {
+		t.Fatalf("securities = %#v", securities)
+	}
+	if securities[0].Symbol != "600519" || securities[0].Name != "" {
+		t.Fatalf("security = %#v", securities[0])
+	}
+}
+
+func TestFetchSecurityListRejectsBeijingDiscovery(t *testing.T) {
+	_, err := FetchSecurityList(context.Background(), "bj", QuoteClientOptions{})
+	if err == nil || !strings.Contains(err.Error(), "unsupported security-list market") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestFetchSecurityListUsesCountAndPages(t *testing.T) {
 	server := startScriptedHQServer(t, append(setupSteps(),
 		scriptStep{ReadLen: len(BuildSecurityCountPacket("sh")), Body: countBody(1)},
@@ -125,6 +247,34 @@ func TestFetchSecurityListUsesCountAndPages(t *testing.T) {
 	}
 }
 
+func TestQuoteSweepWithExplicitBeijingSymbolUsesBatchWorkflow(t *testing.T) {
+	request := QuoteRequest{Market: "bj", Symbol: "920001"}
+	server := startScriptedHQServer(t, append(setupSteps(), scriptStep{
+		ReadLen: len(BuildQuoteRequestPacket([]QuoteRequest{request})),
+		Body:    quoteResponseBodyFor(tdxMarketBJ, "920001"),
+	}))
+	quotes, err := QuoteSweep(context.Background(), QuoteSweepOptions{
+		Requests: []QuoteRequest{request},
+		Client: QuoteClientOptions{
+			Server:  server,
+			Timeout: time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quotes) != 1 || quotes[0].Market != "bj" || quotes[0].Symbol != "920001" {
+		t.Fatalf("quotes = %#v", quotes)
+	}
+}
+
+func TestQuoteSweepRejectsBeijingDiscovery(t *testing.T) {
+	_, err := QuoteSweep(context.Background(), QuoteSweepOptions{Markets: []string{"bj"}})
+	if err == nil || !strings.Contains(err.Error(), "unsupported security-list market") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestQuoteSweepWithExplicitSymbolsUsesBatchWorkflow(t *testing.T) {
 	requests := []QuoteRequest{
 		{Market: "sh", Symbol: "600519"},
@@ -132,7 +282,7 @@ func TestQuoteSweepWithExplicitSymbolsUsesBatchWorkflow(t *testing.T) {
 	}
 	server := startScriptedHQServer(t, append(setupSteps(),
 		scriptStep{ReadLen: len(BuildQuoteRequestPacket(requests[:1])), Body: quoteResponseBody()},
-		scriptStep{ReadLen: len(BuildQuoteRequestPacket(requests[1:])), Body: quoteResponseBody()},
+		scriptStep{ReadLen: len(BuildQuoteRequestPacket(requests[1:])), Body: quoteResponseBodyFor(tdxMarketSH, "600000")},
 	))
 	quotes, err := QuoteSweep(context.Background(), QuoteSweepOptions{
 		Requests: requests,
@@ -241,6 +391,7 @@ func countBody(n int) []byte {
 type securityRecord struct {
 	Code         string
 	Name         string
+	NameBytes    []byte
 	VolUnit      uint16
 	DecimalPoint byte
 }
@@ -252,7 +403,11 @@ func securityListBody(records []securityRecord) []byte {
 		raw := make([]byte, 29)
 		copy(raw[0:6], record.Code)
 		binary.LittleEndian.PutUint16(raw[6:8], record.VolUnit)
-		copy(raw[8:16], strings.ToUpper(record.Name))
+		name := record.NameBytes
+		if name == nil {
+			name = []byte(strings.ToUpper(record.Name))
+		}
+		copy(raw[8:16], name)
 		raw[20] = record.DecimalPoint
 		body = append(body, raw...)
 	}

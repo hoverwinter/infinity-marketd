@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,14 @@ var probeHQServers = tdx.ProbeHQServers
 var fetchQuoteSweep = tdx.QuoteSweep
 var fetchExMarkets = tdx.FetchExMarkets
 var fetchExQuote = tdx.FetchExQuote
+var fetchExInstrumentCount = tdx.FetchExInstrumentCount
+var fetchExInstruments = tdx.FetchExInstruments
+var fetchExBars = tdx.FetchExBars
+var fetchExMinuteTime = tdx.FetchExMinuteTime
+var fetchExHistoryMinuteTime = tdx.FetchExHistoryMinuteTime
+var fetchExTransactions = tdx.FetchExTransactions
+var fetchExHistoryTransactions = tdx.FetchExHistoryTransactions
+var fetchExHistoryBarsRange = tdx.FetchExHistoryBarsRange
 
 func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -48,8 +57,24 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runQuoteSweep(ctx, args[1:], stdout, stderr)
 	case "exquote-markets":
 		return runExQuoteMarkets(ctx, args[1:], stdout, stderr)
+	case "exquote-count":
+		return runExQuoteCount(ctx, args[1:], stdout, stderr)
+	case "exquote-instruments":
+		return runExQuoteInstruments(ctx, args[1:], stdout, stderr)
 	case "exquote":
 		return runExQuote(ctx, args[1:], stdout, stderr)
+	case "exquote-bars":
+		return runExQuoteBars(ctx, args[1:], stdout, stderr)
+	case "exquote-minute":
+		return runExQuoteMinute(ctx, args[1:], stdout, stderr)
+	case "exquote-history-minute":
+		return runExQuoteHistoryMinute(ctx, args[1:], stdout, stderr)
+	case "exquote-transactions":
+		return runExQuoteTransactions(ctx, args[1:], stdout, stderr)
+	case "exquote-history-transactions":
+		return runExQuoteHistoryTransactions(ctx, args[1:], stdout, stderr)
+	case "exquote-history-bars":
+		return runExQuoteHistoryBars(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return 0
@@ -226,6 +251,44 @@ func runExQuoteMarkets(ctx context.Context, args []string, stdout io.Writer, std
 	return 0
 }
 
+func runExQuoteCount(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	fs := newFlagSet("exquote-count", stderr)
+	fs.Var(&servers, "server", "TDX ExHQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	count, err := fetchExInstrumentCount(ctx, exQuoteClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, count)
+}
+
+func runExQuoteInstruments(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var start int
+	var count int
+	fs := newFlagSet("exquote-instruments", stderr)
+	fs.IntVar(&start, "start", 0, "instrument list start offset")
+	fs.IntVar(&count, "count", tdx.DefaultExInstrumentListCount, "instrument list count")
+	fs.Var(&servers, "server", "TDX ExHQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if start < 0 || count <= 0 || count > tdx.MaxExInstrumentListCount {
+		fmt.Fprintf(stderr, "--start must be non-negative and --count must be between 1 and %d\n", tdx.MaxExInstrumentListCount)
+		return 2
+	}
+	instruments, err := fetchExInstruments(ctx, start, count, exQuoteClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, instruments)
+}
+
 func runExQuote(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	var servers listFlags
 	var market int
@@ -256,6 +319,204 @@ func runExQuote(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	return 0
 }
 
+func runExQuoteBars(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var market int
+	var code string
+	var category int
+	var start int
+	var count int
+	fs := newFlagSet("exquote-bars", stderr)
+	fs.IntVar(&market, "market", 0, "TDX ExHQ numeric market id")
+	fs.StringVar(&code, "code", "", "TDX ExHQ instrument code")
+	fs.IntVar(&category, "category", tdx.ExKLineDaily, "K-line category: 0=5m, 1=15m, 2=30m, 3=1h, 4=day, 5=week, 6=month, 7=ExHQ 1m, 8=1m, 9=day, 10=quarter, 11=year")
+	fs.IntVar(&start, "start", 0, "K-line start offset")
+	fs.IntVar(&count, "count", 100, "K-line count, max 800")
+	fs.Var(&servers, "server", "TDX ExHQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseExBarsRequest(category, market, code, start, count)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	bars, err := fetchExBars(ctx, req, exQuoteClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, bars)
+}
+
+func runExQuoteMinute(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var market int
+	var code string
+	fs := newFlagSet("exquote-minute", stderr)
+	fs.IntVar(&market, "market", 0, "TDX ExHQ numeric market id")
+	fs.StringVar(&code, "code", "", "TDX ExHQ instrument code")
+	fs.Var(&servers, "server", "TDX ExHQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseExQuoteRequest(market, code)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	points, err := fetchExMinuteTime(ctx, req, exQuoteClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, points)
+}
+
+func runExQuoteHistoryMinute(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var market int
+	var code string
+	var dateText string
+	fs := newFlagSet("exquote-history-minute", stderr)
+	fs.IntVar(&market, "market", 0, "TDX ExHQ numeric market id")
+	fs.StringVar(&code, "code", "", "TDX ExHQ instrument code")
+	fs.StringVar(&dateText, "date", "", "history date YYYYMMDD")
+	fs.Var(&servers, "server", "TDX ExHQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseExQuoteRequest(market, code)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	date, err := parseYYYYMMDDFlag("date", dateText)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	points, err := fetchExHistoryMinuteTime(ctx, req, date, exQuoteClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, points)
+}
+
+func runExQuoteTransactions(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var market int
+	var code string
+	var start int
+	var count int
+	fs := newFlagSet("exquote-transactions", stderr)
+	fs.IntVar(&market, "market", 0, "TDX ExHQ numeric market id")
+	fs.StringVar(&code, "code", "", "TDX ExHQ instrument code")
+	fs.IntVar(&start, "start", 0, "transaction start offset")
+	fs.IntVar(&count, "count", tdx.MaxExTransactionCount, "transaction count, max 1800")
+	fs.Var(&servers, "server", "TDX ExHQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseExQuoteRequest(market, code)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if start < 0 || count <= 0 || count > tdx.MaxExTransactionCount {
+		fmt.Fprintf(stderr, "--start must be non-negative and --count must be between 1 and %d\n", tdx.MaxExTransactionCount)
+		return 2
+	}
+	transactions, err := fetchExTransactions(ctx, req, start, count, exQuoteClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, transactions)
+}
+
+func runExQuoteHistoryTransactions(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var market int
+	var code string
+	var dateText string
+	var start int
+	var count int
+	fs := newFlagSet("exquote-history-transactions", stderr)
+	fs.IntVar(&market, "market", 0, "TDX ExHQ numeric market id")
+	fs.StringVar(&code, "code", "", "TDX ExHQ instrument code")
+	fs.StringVar(&dateText, "date", "", "history date YYYYMMDD")
+	fs.IntVar(&start, "start", 0, "transaction start offset")
+	fs.IntVar(&count, "count", tdx.MaxExTransactionCount, "transaction count, max 1800")
+	fs.Var(&servers, "server", "TDX ExHQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseExQuoteRequest(market, code)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	date, err := parseYYYYMMDDFlag("date", dateText)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if start < 0 || count <= 0 || count > tdx.MaxExTransactionCount {
+		fmt.Fprintf(stderr, "--start must be non-negative and --count must be between 1 and %d\n", tdx.MaxExTransactionCount)
+		return 2
+	}
+	transactions, err := fetchExHistoryTransactions(ctx, req, date, start, count, exQuoteClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, transactions)
+}
+
+func runExQuoteHistoryBars(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var market int
+	var code string
+	var startDateText string
+	var endDateText string
+	fs := newFlagSet("exquote-history-bars", stderr)
+	fs.IntVar(&market, "market", 0, "TDX ExHQ numeric market id")
+	fs.StringVar(&code, "code", "", "TDX ExHQ instrument code")
+	fs.StringVar(&startDateText, "start-date", "", "range start date YYYYMMDD")
+	fs.StringVar(&endDateText, "end-date", "", "range end date YYYYMMDD")
+	fs.Var(&servers, "server", "TDX ExHQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseExQuoteRequest(market, code)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	startDate, err := parseYYYYMMDDFlag("start-date", startDateText)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	endDate, err := parseYYYYMMDDFlag("end-date", endDateText)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if startDate > endDate {
+		fmt.Fprintln(stderr, "--start-date must be <= --end-date")
+		return 2
+	}
+	bars, err := fetchExHistoryBarsRange(ctx, req, startDate, endDate, exQuoteClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, bars)
+}
+
 func quoteClientOptions(servers []string, batchSize int, tradeDateText string) (tdx.QuoteClientOptions, error) {
 	opts := tdx.QuoteClientOptions{
 		Servers:   servers,
@@ -279,6 +540,34 @@ func quoteClientOptions(servers []string, batchSize int, tradeDateText string) (
 
 func exQuoteClientOptions(servers []string) tdx.ExQuoteClientOptions {
 	return tdx.ExQuoteClientOptions{Servers: servers}
+}
+
+func parseYYYYMMDDFlag(name, value string) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, fmt.Errorf("--%s is required", name)
+	}
+	if len(value) != 8 {
+		return 0, fmt.Errorf("--%s must be YYYYMMDD", name)
+	}
+	if _, err := time.Parse("20060102", value); err != nil {
+		return 0, fmt.Errorf("parse --%s: %w", name, err)
+	}
+	date, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse --%s: %w", name, err)
+	}
+	return date, nil
+}
+
+func writeJSON(stdout io.Writer, stderr io.Writer, value any) int {
+	encoded, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintln(stdout, string(encoded))
+	return 0
 }
 
 func runBootstrap(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
@@ -600,7 +889,15 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  quote-probe")
 	fmt.Fprintln(out, "  quote-sweep")
 	fmt.Fprintln(out, "  exquote-markets")
+	fmt.Fprintln(out, "  exquote-count")
+	fmt.Fprintln(out, "  exquote-instruments")
 	fmt.Fprintln(out, "  exquote")
+	fmt.Fprintln(out, "  exquote-bars")
+	fmt.Fprintln(out, "  exquote-minute")
+	fmt.Fprintln(out, "  exquote-history-minute")
+	fmt.Fprintln(out, "  exquote-transactions")
+	fmt.Fprintln(out, "  exquote-history-transactions")
+	fmt.Fprintln(out, "  exquote-history-bars")
 }
 
 func datasetFor(period tdx.Period) string {

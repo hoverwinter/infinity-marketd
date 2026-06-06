@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.40.3
 	go.uber.org/zap v1.28.0
+	golang.org/x/text v0.30.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
 )

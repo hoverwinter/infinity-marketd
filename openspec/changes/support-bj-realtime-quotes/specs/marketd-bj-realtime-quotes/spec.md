@@ -33,16 +33,30 @@ The system SHALL infer Beijing market for supported Beijing code prefixes in rea
 - **WHEN** the operator runs `marketd quote --symbol 830001` or `marketd quote --symbol 430001`
 - **THEN** the request is treated as a Beijing realtime quote request
 
-### Requirement: Discover Beijing online symbols
-The system SHALL support Beijing online security-list discovery when the verified TDX standard行情 path supports it.
+### Requirement: Sweep explicit Beijing symbols
+The system SHALL support explicit Beijing symbols in the quote sweep workflow.
 
-#### Scenario: Beijing security list
-- **WHEN** the operator requests online symbols for `bj`
-- **THEN** the system returns discovered six-digit Beijing symbols
+#### Scenario: Explicit Beijing quote sweep
+- **WHEN** the operator runs `marketd quote-sweep --symbol 920001,bj:920799`
+- **THEN** the system fetches Beijing realtime quotes through the batch workflow
 
-#### Scenario: Beijing quote sweep
+#### Scenario: Beijing requests split conservatively
+- **WHEN** a quote batch contains a Beijing request
+- **THEN** the system sends Beijing quote requests as single-symbol TDX requests until live multi-record response parsing is hardened
+
+### Requirement: Keep Beijing online discovery unsupported until verified
+The system SHALL keep Beijing online security-list discovery disabled when the TDX standard行情 list path is not verified.
+
+#### Scenario: Beijing security list unsupported
 - **WHEN** the operator runs `marketd quote-sweep --market bj`
-- **THEN** the system discovers Beijing symbols and fetches realtime quotes through the batch workflow
+- **THEN** the command fails with a clear unsupported security-list market error
+
+### Requirement: Reject mismatched quote responses
+The system SHALL reject realtime quote responses whose decoded market or symbol does not match the request.
+
+#### Scenario: Server fallback record
+- **WHEN** a Beijing quote request receives an unrelated fallback record such as `sh:600839`
+- **THEN** the system returns an identity mismatch error instead of emitting that quote
 
 ### Requirement: Preserve unsupported behavior until verified
 The system SHALL keep unsupported Beijing behavior explicit until the verified implementation is complete.

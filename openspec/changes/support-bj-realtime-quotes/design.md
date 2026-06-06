@@ -11,7 +11,8 @@ The implementation must not guess the Beijing market mapping. The first implemen
 - Verify that Beijing quote response payloads decode with the same standard `hq` quote parser.
 - Support explicit `bj:<symbol>` quote requests after validation.
 - Support inferred Beijing symbols, including `920*`, `8*`, and `4*` code families that `InferMarketFromCode` already maps to `bj`.
-- Include `bj` in online security-list discovery and `quote-sweep` when the standard行情 server supports it.
+- Support explicit Beijing symbol lists in `quote-sweep`.
+- Keep Beijing online security-list discovery disabled unless a future server path is verified.
 - Document the verified mapping, sample commands, and remaining limitations.
 
 **Non-Goals:**
@@ -31,9 +32,13 @@ The implementation must not guess the Beijing market mapping. The first implemen
   - Rationale: this preserves one A-share standard行情 client for `sh` / `sz` / `bj`.
   - Alternative considered: add a separate Beijing quote client. That is only justified if live samples show a different protocol or endpoint.
 
-- Treat online security-list discovery as part of acceptance.
-  - Rationale: quote sweep needs market symbol discovery, not only explicit one-off symbols.
-  - Alternative considered: support only explicit `bj` symbols first. This is a useful fallback but incomplete for operational workflows.
+- Keep online Beijing security-list discovery disabled after verification.
+  - Rationale: reachable HQ servers returned valid `920*` quotes with market byte `2`, but market byte `2` security count/list probes timed out and did not produce a usable discovery path.
+  - Alternative considered: map `bj` discovery to `sh` or `sz`. This is rejected because it returns unrelated securities.
+
+- Split requests containing `bj` into single-symbol batches for now.
+  - Rationale: live single-symbol Beijing quote responses decode reliably, while live multi-symbol responses require a separate parser hardening pass before enabling batching.
+  - Alternative considered: rely on existing multi-symbol parser. This is rejected for Beijing because returning a partial or misaligned quote is worse than a slower but correct request.
 
 - Use captured/synthetic tests for parser behavior.
   - Rationale: live public TDX servers are unstable in CI and cannot be the only verification.
@@ -42,7 +47,15 @@ The implementation must not guess the Beijing market mapping. The first implemen
 ## Risks / Trade-offs
 
 - Beijing market may not be available through standard `hq` servers -> document the finding and update the design before implementation.
-- Public TDX servers may return inconsistent lists or reject Beijing requests -> require at least one successful live sample and fixture-based tests.
+- Public TDX servers may return inconsistent lists or reject Beijing discovery -> keep `quote-sweep --market bj` unsupported until a usable list path is verified.
 - Code-prefix inference may include instruments that are not valid realtime quote targets -> parser should continue to validate six-digit symbols and quote response identity.
 - Security-list naming may need GBK decoding improvements -> keep name decoding separate from quote correctness.
-- Adding `bj` to quote sweep can increase request volume -> existing `--limit` and `--batch-size` controls remain required.
+- Adding explicit `bj` quote sweep can increase request volume because `bj` requests are single-symbol batches -> existing `--limit` remains required for operator smoke tests.
+
+## Verification Notes
+
+- Reachable HQ servers: `60.191.117.167:7709`, `180.153.18.170:7709`.
+- Verified quote market byte: `2`.
+- Successful samples: `bj:920001`, inferred `920001`, `920799`, `920682`, `920167`; responses returned `market=2` and matching symbols.
+- Negative samples: `430047` and older candidate `830001` returned mismatched `sh:600839` fallback records on tested servers, so response identity validation rejects them.
+- Security count/list with market byte `2` timed out on tested servers, so Beijing online discovery remains unsupported in this change.

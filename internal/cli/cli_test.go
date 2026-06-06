@@ -100,7 +100,7 @@ func TestQuoteCommandEmitsJSONAndUsesServerOverride(t *testing.T) {
 
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	code := Run(context.Background(), []string{"quote", "--server", "127.0.0.1:7709,127.0.0.2:7709", "--batch-size", "2", "--symbol", "sh:600519,000001"}, &out, &errOut)
+	code := Run(context.Background(), []string{"quote", "--server", "127.0.0.1:7709,127.0.0.2:7709", "--batch-size", "2", "--symbol", "sh:600519,000001,bj:920001,920799"}, &out, &errOut)
 	if code != 0 {
 		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
 	}
@@ -110,7 +110,7 @@ func TestQuoteCommandEmitsJSONAndUsesServerOverride(t *testing.T) {
 	if gotBatchSize != 2 {
 		t.Fatalf("batch size = %d", gotBatchSize)
 	}
-	if len(gotRequests) != 2 {
+	if len(gotRequests) != 4 {
 		t.Fatalf("requests = %#v", gotRequests)
 	}
 	if gotRequests[0] != (tdx.QuoteRequest{Market: "sh", Symbol: "600519"}) {
@@ -118,6 +118,12 @@ func TestQuoteCommandEmitsJSONAndUsesServerOverride(t *testing.T) {
 	}
 	if gotRequests[1] != (tdx.QuoteRequest{Market: "sz", Symbol: "000001"}) {
 		t.Fatalf("second request = %#v", gotRequests[1])
+	}
+	if gotRequests[2] != (tdx.QuoteRequest{Market: "bj", Symbol: "920001"}) {
+		t.Fatalf("third request = %#v", gotRequests[2])
+	}
+	if gotRequests[3] != (tdx.QuoteRequest{Market: "bj", Symbol: "920799"}) {
+		t.Fatalf("fourth request = %#v", gotRequests[3])
 	}
 	var decoded []tdx.Quote
 	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
@@ -186,6 +192,43 @@ func TestQuoteSweepCommandUsesStubbedWorkflow(t *testing.T) {
 		t.Fatalf("invalid json: %v\n%s", err, out.String())
 	}
 	if len(decoded) != 1 || decoded[0].Symbol != "000001" {
+		t.Fatalf("decoded = %#v", decoded)
+	}
+}
+
+func TestQuoteSweepCommandAcceptsExplicitBeijingSymbols(t *testing.T) {
+	original := fetchQuoteSweep
+	defer func() { fetchQuoteSweep = original }()
+
+	var got tdx.QuoteSweepOptions
+	fetchQuoteSweep = func(ctx context.Context, opts tdx.QuoteSweepOptions) ([]tdx.Quote, error) {
+		got = opts
+		return []tdx.Quote{{Market: "bj", Symbol: "920001", Price: 10}}, nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"quote-sweep", "--symbol", "920001,bj:920799", "--server", "127.0.0.1:7709"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if len(got.Requests) != 2 {
+		t.Fatalf("requests = %#v", got.Requests)
+	}
+	if got.Requests[0] != (tdx.QuoteRequest{Market: "bj", Symbol: "920001"}) {
+		t.Fatalf("first request = %#v", got.Requests[0])
+	}
+	if got.Requests[1] != (tdx.QuoteRequest{Market: "bj", Symbol: "920799"}) {
+		t.Fatalf("second request = %#v", got.Requests[1])
+	}
+	if strings.Join(got.Client.Servers, ",") != "127.0.0.1:7709" {
+		t.Fatalf("servers = %#v", got.Client.Servers)
+	}
+	var decoded []tdx.Quote
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if len(decoded) != 1 || decoded[0].Market != "bj" {
 		t.Fatalf("decoded = %#v", decoded)
 	}
 }
@@ -267,10 +310,165 @@ func TestExQuoteCommandEmitsJSONAndUsesServerOverride(t *testing.T) {
 	}
 }
 
+func TestExQuoteCountCommandEmitsJSONAndUsesServerOverride(t *testing.T) {
+	original := fetchExInstrumentCount
+	defer func() { fetchExInstrumentCount = original }()
+
+	var gotServers []string
+	fetchExInstrumentCount = func(ctx context.Context, opts tdx.ExQuoteClientOptions) (int, error) {
+		gotServers = append([]string(nil), opts.Servers...)
+		return 12345, nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"exquote-count", "--server", "127.0.0.1:7727"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if strings.Join(gotServers, ",") != "127.0.0.1:7727" {
+		t.Fatalf("servers = %#v", gotServers)
+	}
+	var decoded int
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if decoded != 12345 {
+		t.Fatalf("decoded = %d", decoded)
+	}
+}
+
+func TestExQuoteInstrumentsCommandEmitsJSON(t *testing.T) {
+	original := fetchExInstruments
+	defer func() { fetchExInstruments = original }()
+
+	var gotStart int
+	var gotCount int
+	var gotServers []string
+	fetchExInstruments = func(ctx context.Context, start, count int, opts tdx.ExQuoteClientOptions) ([]tdx.ExInstrument, error) {
+		gotStart = start
+		gotCount = count
+		gotServers = append([]string(nil), opts.Servers...)
+		return []tdx.ExInstrument{{Category: 3, Market: 47, Code: "IF1709", Name: "IF main"}}, nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"exquote-instruments", "--start", "100", "--count", "2", "--server", "127.0.0.1:7727"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if gotStart != 100 || gotCount != 2 || strings.Join(gotServers, ",") != "127.0.0.1:7727" {
+		t.Fatalf("got start=%d count=%d servers=%#v", gotStart, gotCount, gotServers)
+	}
+	var decoded []tdx.ExInstrument
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if len(decoded) != 1 || decoded[0].Code != "IF1709" {
+		t.Fatalf("decoded = %#v", decoded)
+	}
+}
+
+func TestExQuoteBarsCommandEmitsJSON(t *testing.T) {
+	original := fetchExBars
+	defer func() { fetchExBars = original }()
+
+	var gotRequest tdx.ExBarsRequest
+	var gotServers []string
+	fetchExBars = func(ctx context.Context, req tdx.ExBarsRequest, opts tdx.ExQuoteClientOptions) ([]tdx.ExBar, error) {
+		gotRequest = req
+		gotServers = append([]string(nil), opts.Servers...)
+		return []tdx.ExBar{{Market: req.Market, Code: req.Code, Category: req.Category, DateTime: "2026-06-05 09:30", Open: 1, Close: 2}}, nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"exquote-bars", "--market", "47", "--code", "IF1709", "--category", "7", "--start", "10", "--count", "2", "--server", "127.0.0.1:7727"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if gotRequest != (tdx.ExBarsRequest{Category: 7, Market: 47, Code: "IF1709", Start: 10, Count: 2}) {
+		t.Fatalf("request = %#v", gotRequest)
+	}
+	if strings.Join(gotServers, ",") != "127.0.0.1:7727" {
+		t.Fatalf("servers = %#v", gotServers)
+	}
+	var decoded []tdx.ExBar
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if len(decoded) != 1 || decoded[0].Code != "IF1709" {
+		t.Fatalf("decoded = %#v", decoded)
+	}
+}
+
+func TestExQuoteHistoryCommandsParseDates(t *testing.T) {
+	originalMinute := fetchExHistoryMinuteTime
+	originalTransactions := fetchExHistoryTransactions
+	originalBars := fetchExHistoryBarsRange
+	defer func() {
+		fetchExHistoryMinuteTime = originalMinute
+		fetchExHistoryTransactions = originalTransactions
+		fetchExHistoryBarsRange = originalBars
+	}()
+
+	var gotMinuteDate int
+	fetchExHistoryMinuteTime = func(ctx context.Context, req tdx.ExQuoteRequest, date int, opts tdx.ExQuoteClientOptions) ([]tdx.ExMinutePoint, error) {
+		gotMinuteDate = date
+		return []tdx.ExMinutePoint{{Market: req.Market, Code: req.Code, Date: "2026-06-05"}}, nil
+	}
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"exquote-history-minute", "--market", "47", "--code", "IF1709", "--date", "20260605"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("history minute exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if gotMinuteDate != 20260605 {
+		t.Fatalf("minute date = %d", gotMinuteDate)
+	}
+
+	var gotTransactionDate int
+	var gotTransactionStart int
+	var gotTransactionCount int
+	fetchExHistoryTransactions = func(ctx context.Context, req tdx.ExQuoteRequest, date, start, count int, opts tdx.ExQuoteClientOptions) ([]tdx.ExTransaction, error) {
+		gotTransactionDate = date
+		gotTransactionStart = start
+		gotTransactionCount = count
+		return []tdx.ExTransaction{{Market: req.Market, Code: req.Code, Date: "2026-06-05"}}, nil
+	}
+	out.Reset()
+	errOut.Reset()
+	code = Run(context.Background(), []string{"exquote-history-transactions", "--market", "47", "--code", "IF1709", "--date", "20260605", "--start", "10", "--count", "20"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("history transactions exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if gotTransactionDate != 20260605 || gotTransactionStart != 10 || gotTransactionCount != 20 {
+		t.Fatalf("history transaction args date=%d start=%d count=%d", gotTransactionDate, gotTransactionStart, gotTransactionCount)
+	}
+
+	var gotStartDate int
+	var gotEndDate int
+	fetchExHistoryBarsRange = func(ctx context.Context, req tdx.ExQuoteRequest, startDate, endDate int, opts tdx.ExQuoteClientOptions) ([]tdx.ExBar, error) {
+		gotStartDate = startDate
+		gotEndDate = endDate
+		return []tdx.ExBar{{Market: req.Market, Code: req.Code, DateTime: "2026-06-05 09:30"}}, nil
+	}
+	out.Reset()
+	errOut.Reset()
+	code = Run(context.Background(), []string{"exquote-history-bars", "--market", "74", "--code", "BABA", "--start-date", "20260601", "--end-date", "20260605"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("history bars exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if gotStartDate != 20260601 || gotEndDate != 20260605 {
+		t.Fatalf("history bars dates = %d %d", gotStartDate, gotEndDate)
+	}
+}
+
 func TestQuoteCommandValidatesArguments(t *testing.T) {
 	tests := [][]string{
 		{"quote"},
-		{"quote", "--symbol", "bj:920001"},
+		{"quote", "--symbol", "hk:00700"},
 		{"quote", "--symbol", "bad"},
 	}
 	for _, args := range tests {

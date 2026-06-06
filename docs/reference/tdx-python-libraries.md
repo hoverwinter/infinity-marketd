@@ -76,6 +76,10 @@ Core API surface:
 | `get_finance_info` | 财务信息 |
 | `get_block_info_meta` / `get_block_info` | 板块信息 |
 
+`get_security_bars` / `get_index_bars` 的 `count` 参数单次最多 800 根 K 线。`start` 是从最近 bar 向历史方向的偏移位置；超过 800 根的历史应使用 `start=0,800,1600,...` 分页读取。800 是协议页大小限制，不是最近 800 天的服务端保留窗口。
+
+`get_history_minute_time_data` 按单个 `YYYYMMDD` 日期请求历史分时，通常返回当日最多 240 个 `price + vol` 点。实测标准行情服务器可返回远早于最近 800 天的历史分时，但非交易日、上市前日期或 server 未服务日期会返回空。
+
 #### A-share realtime quote fields
 
 `get_security_quotes` 返回的关键字段：
@@ -171,19 +175,25 @@ Key fields:
 | `bid1..bid5`, `ask1..ask5` | 五档买卖价 |
 | `bid_vol1..5`, `ask_vol1..5` | 五档买卖量 |
 
-`marketd` status: partially implemented as a separate capability from A-share standard realtime quotes.
+`marketd` status: implemented as a separate on-demand read capability from A-share standard realtime quotes.
 
 Implemented:
 
 - `marketd exquote-markets` for `get_markets`.
+- `marketd exquote-count` for `get_instrument_count`.
+- `marketd exquote-instruments` for `get_instrument_info`.
 - `marketd exquote --market <id> --code <instrument>` for `get_instrument_quote`.
+- `marketd exquote-bars` for `get_instrument_bars`.
+- `marketd exquote-minute` for `get_minute_time_data`.
+- `marketd exquote-history-minute` for `get_history_minute_time_data`.
+- `marketd exquote-transactions` for `get_transaction_data`.
+- `marketd exquote-history-transactions` for `get_history_transaction_data`.
+- `marketd exquote-history-bars` for the pytdx historical K-line range parser.
 
 Not implemented:
 
-- instrument count/list;
-- K-line;
-- minute-time;
-- transaction and history APIs;
+- ClickHouse persistence for ExHQ results;
+- authenticated Level-2 feeds;
 - ClickHouse persistence.
 
 ### `pytdx.reader`
@@ -263,6 +273,8 @@ client = Quotes.factory(market="std", multithread=True, heartbeat=True)
 client.quotes(symbol=["600519", "000001"])
 client.bars(symbol="600519", frequency=9, offset=10)
 ```
+
+`mootdx.quotes.StdQuotes.bars` 默认 `offset=800`，并会把大于 800 的 offset 截断为 800，然后调用底层 `get_security_bars`。这是对 TDX 单次 K 线请求页大小的保护；要获取更久历史，应调整 `start` 分页，而不是增大 `offset`。
 
 Main capabilities:
 

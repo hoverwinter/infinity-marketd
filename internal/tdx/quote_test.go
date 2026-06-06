@@ -14,8 +14,12 @@ func TestParseQuoteRequest(t *testing.T) {
 	}{
 		{input: "600519", market: "sh", symbol: "600519"},
 		{input: "000001", market: "sz", symbol: "000001"},
+		{input: "920001", market: "bj", symbol: "920001"},
+		{input: "830001", market: "bj", symbol: "830001"},
+		{input: "430001", market: "bj", symbol: "430001"},
 		{input: "sh:600000", market: "sh", symbol: "600000"},
 		{input: "sz:300750", market: "sz", symbol: "300750"},
+		{input: "bj:920001", market: "bj", symbol: "920001"},
 	}
 	for _, tt := range tests {
 		got, err := ParseQuoteRequest(tt.input)
@@ -29,7 +33,7 @@ func TestParseQuoteRequest(t *testing.T) {
 }
 
 func TestParseQuoteRequestRejectsUnsupportedMarket(t *testing.T) {
-	if _, err := ParseQuoteRequest("bj:920001"); err == nil {
+	if _, err := ParseQuoteRequest("hk:00700"); err == nil {
 		t.Fatal("expected unsupported market error")
 	}
 	if _, err := ParseQuoteRequest("60051"); err == nil {
@@ -41,8 +45,9 @@ func TestBuildQuoteRequestPacket(t *testing.T) {
 	packet := BuildQuoteRequestPacket([]QuoteRequest{
 		{Market: "sz", Symbol: "000001"},
 		{Market: "sh", Symbol: "600519"},
+		{Market: "bj", Symbol: "920001"},
 	})
-	if len(packet) != 36 {
+	if len(packet) != 43 {
 		t.Fatalf("packet len = %d", len(packet))
 	}
 	if got := binary.LittleEndian.Uint16(packet[0:2]); got != 0x010c {
@@ -51,13 +56,17 @@ func TestBuildQuoteRequestPacket(t *testing.T) {
 	if got := binary.LittleEndian.Uint32(packet[2:6]); got != 0x02006320 {
 		t.Fatalf("magic = %#x", got)
 	}
-	if got := binary.LittleEndian.Uint16(packet[6:8]); got != 26 {
+	if got := binary.LittleEndian.Uint16(packet[6:8]); got != 33 {
 		t.Fatalf("data len = %d", got)
 	}
-	if got := binary.LittleEndian.Uint16(packet[20:22]); got != 2 {
+	if got := binary.LittleEndian.Uint16(packet[20:22]); got != 3 {
 		t.Fatalf("stock count = %d", got)
 	}
-	wantTail := []byte{0, '0', '0', '0', '0', '0', '1', 1, '6', '0', '0', '5', '1', '9'}
+	wantTail := []byte{
+		0, '0', '0', '0', '0', '0', '1',
+		1, '6', '0', '0', '5', '1', '9',
+		2, '9', '2', '0', '0', '0', '1',
+	}
 	if string(packet[22:]) != string(wantTail) {
 		t.Fatalf("tail = %v", packet[22:])
 	}
@@ -110,6 +119,20 @@ func TestDecodeQuoteResponse(t *testing.T) {
 	}
 }
 
+func TestDecodeQuoteResponseBeijing(t *testing.T) {
+	body := quoteResponseBodyFor(tdxMarketBJ, "920001")
+	quotes, err := DecodeQuoteResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quotes) != 1 {
+		t.Fatalf("quotes = %d", len(quotes))
+	}
+	if quotes[0].Market != "bj" || quotes[0].Symbol != "920001" || quotes[0].Price != 123.45 {
+		t.Fatalf("quote = %#v", quotes[0])
+	}
+}
+
 func TestFormatTDXQuoteTime(t *testing.T) {
 	if got := formatTDXQuoteTime(9300000); got != "9:30:00.000" {
 		t.Fatalf("time = %q", got)
@@ -117,9 +140,15 @@ func TestFormatTDXQuoteTime(t *testing.T) {
 }
 
 func quoteResponseBody() []byte {
+	return quoteResponseBodyFor(tdxMarketSH, "600519")
+}
+
+func quoteResponseBodyFor(market int, code string) []byte {
 	body := []byte{0xb1, 0xcb, 1, 0}
-	body = append(body, byte(tdxMarketSH))
-	body = append(body, []byte("600519")...)
+	body = append(body, byte(market))
+	rawCode := make([]byte, 6)
+	copy(rawCode, code)
+	body = append(body, rawCode...)
 	body = append(body, 0, 0)
 	body = append(body, encodeTDXVarInt(12345)...)
 	body = append(body, encodeTDXVarInt(-45)...)
