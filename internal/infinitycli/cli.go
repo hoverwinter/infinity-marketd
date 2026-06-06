@@ -12,7 +12,9 @@ import (
 
 	chstore "github.com/hoverwinter/infinity-marketd/internal/clickhouse"
 	"github.com/hoverwinter/infinity-marketd/internal/config"
+	"github.com/hoverwinter/infinity-marketd/internal/logging"
 	"github.com/hoverwinter/infinity-marketd/internal/querier"
+	"go.uber.org/zap"
 )
 
 func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
@@ -71,6 +73,11 @@ func runQuerierServe(ctx context.Context, args []string, stdout io.Writer, stder
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
 	store, err := chstore.Open(ctx, cfg.ClickHouse)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -84,7 +91,9 @@ func runQuerierServe(ctx context.Context, args []string, stdout io.Writer, stder
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	fmt.Fprintf(stdout, "querier listening on http://%s\n", listen)
+	zap.L().Info("querier listening", zap.String("listen", listen))
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		zap.L().Error("querier server stopped", zap.Error(err))
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
@@ -165,6 +174,19 @@ func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	return fs
+}
+
+func setupLogging(cfg config.Config, stderr io.Writer) (func(), bool) {
+	_, cleanup, err := logging.InitGlobal(cfg.Logging)
+	if err != nil {
+		fmt.Fprintf(stderr, "logging: %v\n", err)
+		return nil, false
+	}
+	return func() {
+		if err := cleanup(); err != nil {
+			fmt.Fprintf(stderr, "logging cleanup: %v\n", err)
+		}
+	}, true
 }
 
 func writeJSON(out io.Writer, value any) {

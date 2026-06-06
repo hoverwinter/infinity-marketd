@@ -44,6 +44,18 @@ tdx:
 runtime:
   timezone: "Asia/Shanghai"
   batch_size: 10000
+
+logging:
+  level: "info"
+  encoding: "console"
+  output_paths: ["stderr", "file"]
+  error_output_paths: ["stderr"]
+  file:
+    path: "logs/marketd.log"
+    max_size_mb: 100
+    max_backups: 7
+    max_age_days: 30
+    compress: true
 ```
 
 `database` 映射到 market database。ops database 固定默认是 `infinity_ops`，除非通过配置或环境变量显式覆盖。

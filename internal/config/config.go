@@ -76,8 +76,6 @@ type Overrides struct {
 	LogFileMaxSizeMB   int
 	LogFileMaxBackups  int
 	LogFileMaxAgeDays  int
-	LogFileCompressSet bool
-	LogFileCompress    bool
 }
 
 func Default() Config {
@@ -271,9 +269,6 @@ func applyOverrides(cfg *Config, overrides Overrides) {
 	}
 	if overrides.LogFileMaxAgeDays > 0 {
 		cfg.Logging.File.MaxAgeDays = overrides.LogFileMaxAgeDays
-	}
-	if overrides.LogFileCompressSet {
-		cfg.Logging.File.Compress = overrides.LogFileCompress
 	}
 }
 

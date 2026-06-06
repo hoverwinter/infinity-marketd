@@ -11,3 +11,15 @@ tdx:
 runtime:
   timezone: "Asia/Shanghai"
   batch_size: 10000
+
+logging:
+  level: "info"
+  encoding: "console"
+  output_paths: ["stderr", "file"]
+  error_output_paths: ["stderr"]
+  file:
+    path: "logs/marketd.log"
+    max_size_mb: 100
+    max_backups: 7
+    max_age_days: 30
+    compress: true
