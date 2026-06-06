@@ -30,6 +30,29 @@ Content-Type: application/json
 /api/v1
 ```
 
+## API Namespace Model
+
+`/api/v1/...` 是产品级查询 API，当前主要面向 ClickHouse-backed canonical market data。调用方可以把这些接口视为稳定、可重复读取的查询面。
+
+TDX 在线协议能力不放在 `/api/v1` 下。后续 TDX provider/protocol API 设计为：
+
+```text
+/api/tdx/hq/...
+/api/tdx/exhq/...
+```
+
+边界约定：
+
+| Namespace | Owner | Data source | Contract |
+| --- | --- | --- | --- |
+| `/api/v1/...` | querier product/query API | ClickHouse 或稳定内部状态 | 稳定查询、可重复读取、不发起 live TDX 请求 |
+| `/api/tdx/hq/...` | TDX standard行情 provider API | live TDX HQ upstream | 请求/响应式在线读取，可能超时或受上游影响 |
+| `/api/tdx/exhq/...` | TDX extended行情 provider API | live TDX ExHQ upstream | 扩展市场协议读取，使用 numeric market id 和 instrument code |
+
+`/api/tdx/...` 不应隐式写入 ClickHouse。实时快照持久化、保留周期、去重和查询模型需要单独 storage contract。
+
+TDX provider API 的详细 endpoint contract 见 [tdx.md](tdx.md)。
+
 错误响应格式：
 
 ```json

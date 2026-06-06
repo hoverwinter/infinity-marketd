@@ -14,6 +14,6 @@
 ## 3. Documentation and Validation
 
 - [x] 3.1 Update `docs/design/tdx-realtime-quotes.md` to describe GB18030 security-list name decoding.
-- [x] 3.2 Update `docs/reference/tdx-server-capabilities.md` to remove the GBK decoding limitation.
+- [x] 3.2 Update `docs/design/tdx-server-capabilities.md` to remove the GBK decoding limitation.
 - [x] 3.3 Run `go test ./...`.
 - [x] 3.4 Run `openspec validate --all`.

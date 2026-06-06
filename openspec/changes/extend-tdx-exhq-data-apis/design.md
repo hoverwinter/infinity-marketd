@@ -25,24 +25,24 @@ Primary references:
 
 Public ExHQ servers currently behave inconsistently:
 
-- Some public `7727` and broker `7721` endpoints answer `instrument count`.
-- `47.102.108.214:7727` answered `instrument info` on 2026-06-07.
+- Some public `7727`, `7720`, and broker `7721` endpoints answer `instrument count`.
+- `47.112.95.207:7720` and `47.102.108.214:7727` answered `instrument info` on 2026-06-07.
 - Several endpoints accepted TCP but did not answer the pytdx setup packet.
-- Some endpoints answer metadata but reset or timeout on quote/K-line/minute/transaction requests, possibly because of weekend maintenance, server capability gating, or public access limits.
+- Some endpoints answer metadata but reset or timeout on market-list/quote/K-line/minute/transaction requests, possibly because of weekend maintenance, server capability gating, or public access limits.
 
 Because of that, the Go session opens the TCP connection and sends the requested business packet directly. The pytdx setup packet is kept as a protocol reference but is not sent by default.
 
 ## CLI Contract
 
 ```bash
-go run ./cmd/marketd exquote-count --server 112.74.214.43:7727
-go run ./cmd/marketd exquote-instruments --start 0 --count 100 --server 47.102.108.214:7727
-go run ./cmd/marketd exquote-bars --market 47 --code ICL0 --category 4 --start 0 --count 100 --server 47.102.108.214:7727
-go run ./cmd/marketd exquote-minute --market 47 --code ICL0 --server 47.102.108.214:7727
-go run ./cmd/marketd exquote-history-minute --market 47 --code ICL0 --date 20260605 --server 47.102.108.214:7727
-go run ./cmd/marketd exquote-transactions --market 47 --code ICL0 --start 0 --count 1800 --server 47.102.108.214:7727
-go run ./cmd/marketd exquote-history-transactions --market 47 --code ICL0 --date 20260605 --start 0 --count 1800 --server 47.102.108.214:7727
-go run ./cmd/marketd exquote-history-bars --market 74 --code BABA --start-date 20260601 --end-date 20260605 --server 47.102.108.214:7727
+go run ./cmd/marketd exquote-count --server 47.112.95.207:7720
+go run ./cmd/marketd exquote-instruments --start 0 --count 100 --server 47.112.95.207:7720
+go run ./cmd/marketd exquote-bars --market 47 --code TSL8 --category 4 --start 0 --count 100 --server 47.112.95.207:7720
+go run ./cmd/marketd exquote-minute --market 47 --code TSL8 --server 47.112.95.207:7720
+go run ./cmd/marketd exquote-history-minute --market 47 --code TSL8 --date 20260605 --server 47.112.95.207:7720
+go run ./cmd/marketd exquote-transactions --market 47 --code TSL8 --start 0 --count 1800 --server 47.112.95.207:7720
+go run ./cmd/marketd exquote-history-transactions --market 47 --code TSL8 --date 20260605 --start 0 --count 1800 --server 47.112.95.207:7720
+go run ./cmd/marketd exquote-history-bars --market 74 --code BABA --start-date 20260601 --end-date 20260605 --server 47.112.95.207:7720
 ```
 
 All commands emit JSON and do not require config or ClickHouse.

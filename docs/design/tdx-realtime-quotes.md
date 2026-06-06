@@ -6,10 +6,56 @@
 
 - `internal/tdx/quote.go`：实时行情请求包、响应解析、价格和成交额解码。
 - `internal/tdx/quote_ops.go`：server 探测、候选 server 重试、批量会话复用、证券列表、扫盘 workflow。
-- `internal/tdx/exquote.go`：`exhq` 扩展行情 setup、市场列表、单合约 quote 请求和响应解析。
-- `internal/cli/cli.go`：`quote`、`quote-probe`、`quote-sweep`、`exquote-markets`、`exquote` CLI。
+- `internal/tdx/exquote.go` / `internal/tdx/exquote_data.go`：`exhq` 扩展行情 market list、instrument catalog、quote、K 线、分时、分笔和历史接口请求/响应解析。
+- `internal/cli/cli.go`：`quote`、`quote-probe`、`quote-sweep` 和 `exquote-*` CLI。
 
-该实现用于平替 pytdx `hq.get_security_quotes` 和 `exhq.get_instrument_quote` 的部分实时行情路径，不依赖 Python、pytdx、mootdx、pandas，也不要求 ClickHouse 连接。
+该实现用于平替 pytdx `hq.get_security_quotes` 和常用 `exhq` 读取接口，不依赖 Python、pytdx、mootdx、pandas，也不要求 ClickHouse 连接。
+
+## HTTP API 边界设计
+
+TDX 在线能力应作为 provider/protocol API 暴露，而不是混入 ClickHouse-backed 查询 API。
+
+命名约定：
+
+```text
+/api/v1/...
+  产品级查询 API，当前用于 ClickHouse-backed canonical market data。
+
+/api/tdx/hq/...
+  TDX 标准行情 provider API，使用 sh/sz/bj + 六位证券代码。
+
+/api/tdx/exhq/...
+  TDX 扩展行情 provider API，使用 numeric market id + instrument code。
+```
+
+这样拆分的原因：
+
+- `/api/v1/bars` 查询的是已落库、可重复读取的事实数据。
+- `/api/tdx/*` 发起 live TDX upstream 请求，可能受网络、server 可用性、协议限制、限流和超时影响。
+- TDX `hq` 和 `exhq` 的市场命名、server pool、packet、字段含义不同，不应抽象成一个含糊的 realtime API。
+- 后续控制台可以直接使用 `/api/tdx/*` 做 server 探测、quote smoke test、协议诊断，而不会污染产品查询 API。
+
+首期 HTTP 形态保持 request/response：
+
+```text
+GET /api/tdx/hq/quotes
+GET /api/tdx/hq/probe
+GET /api/tdx/hq/securities
+GET /api/tdx/hq/bars
+GET /api/tdx/hq/minute
+GET /api/tdx/hq/transactions
+
+GET /api/tdx/exhq/markets
+GET /api/tdx/exhq/instruments
+GET /api/tdx/exhq/quote
+GET /api/tdx/exhq/bars
+GET /api/tdx/exhq/minute
+GET /api/tdx/exhq/transactions
+```
+
+暂不做 WebSocket/SSE。TDX 标准行情公开协议本身更接近请求/响应轮询；如果以后需要推送，应在已有 request/response API 和连接生命周期策略稳定后单独设计。
+
+`/api/tdx/*` 也不隐式写入 ClickHouse。实时快照持久化需要单独定义表结构、保留周期、去重策略和查询 contract。
 
 ## 已实现能力
 
@@ -212,19 +258,19 @@ go run ./cmd/marketd quote-sweep \
 
 ```bash
 go run ./cmd/marketd exquote-markets \
-  --server 47.102.108.214:7727
+  --server <exhq-server>
 ```
 
 查询扩展品种数量和列表：
 
 ```bash
 go run ./cmd/marketd exquote-count \
-  --server 112.74.214.43:7727
+  --server 47.112.95.207:7720
 
 go run ./cmd/marketd exquote-instruments \
   --start 0 \
   --count 100 \
-  --server 47.102.108.214:7727
+  --server 47.112.95.207:7720
 ```
 
 查询单个扩展品种 quote：
@@ -232,36 +278,36 @@ go run ./cmd/marketd exquote-instruments \
 ```bash
 go run ./cmd/marketd exquote \
   --market 47 \
-  --code ICL0 \
-  --server 47.102.108.214:7727
+  --code TSL8 \
+  --server 47.112.95.207:7720
 ```
 
 查询 K 线、分时、分笔和历史接口：
 
 ```bash
 go run ./cmd/marketd exquote-bars \
-  --market 47 --code ICL0 --category 4 --start 0 --count 100 \
-  --server 47.102.108.214:7727
+  --market 47 --code TSL8 --category 4 --start 0 --count 100 \
+  --server 47.112.95.207:7720
 
 go run ./cmd/marketd exquote-minute \
-  --market 47 --code ICL0 \
-  --server 47.102.108.214:7727
+  --market 47 --code TSL8 \
+  --server 47.112.95.207:7720
 
 go run ./cmd/marketd exquote-history-minute \
-  --market 47 --code ICL0 --date 20260605 \
-  --server 47.102.108.214:7727
+  --market 47 --code TSL8 --date 20260605 \
+  --server 47.112.95.207:7720
 
 go run ./cmd/marketd exquote-transactions \
-  --market 47 --code ICL0 --start 0 --count 1800 \
-  --server 47.102.108.214:7727
+  --market 47 --code TSL8 --start 0 --count 1800 \
+  --server 47.112.95.207:7720
 
 go run ./cmd/marketd exquote-history-transactions \
-  --market 47 --code ICL0 --date 20260605 --start 0 --count 1800 \
-  --server 47.102.108.214:7727
+  --market 47 --code TSL8 --date 20260605 --start 0 --count 1800 \
+  --server 47.112.95.207:7720
 
 go run ./cmd/marketd exquote-history-bars \
   --market 74 --code BABA --start-date 20260601 --end-date 20260605 \
-  --server 47.102.108.214:7727
+  --server 47.112.95.207:7720
 ```
 
 `exquote` 输出单个 JSON object，字段包括：
@@ -279,6 +325,21 @@ go run ./cmd/marketd exquote-history-bars \
 | `neipan` / `waipan` | 内盘 / 外盘 |
 | `chicang` | 持仓类字段 |
 | `bids` / `asks` | 五档买卖盘 |
+
+其他 `exquote-*` 输出模型：
+
+| 命令 | 输出 | 关键字段 |
+| --- | --- | --- |
+| `exquote-count` | JSON number | ExHQ server 返回的品种总数 |
+| `exquote-instruments` | JSON array | `category`, `market`, `code`, `name`, `desc` |
+| `exquote-bars` | JSON array | `datetime`, `open`, `high`, `low`, `close`, `position`, `trade`, `price`, `amount` |
+| `exquote-minute` | JSON array | `time`, `price`, `avg_price`, `volume`, `open_interest` |
+| `exquote-history-minute` | JSON array | `date`, `datetime`, `time`, `price`, `avg_price`, `volume`, `open_interest` |
+| `exquote-transactions` | JSON array | `time`, `price`, `volume`, `zengcang`, `nature`, `nature_name`, `direction` |
+| `exquote-history-transactions` | JSON array | `date`, `datetime`, `time`, `price`, `volume`, `zengcang`, `nature_name`, `direction` |
+| `exquote-history-bars` | JSON array | `datetime`, `open`, `high`, `low`, `close`, `position`, `trade`, `settlement_price` |
+
+`market` 和 `code` 会在所有按品种返回的结果中保留。ExHQ 文本字段按 GB18030/GBK fallback 解码；解码失败时只置空展示字段，不丢弃 `market` / `code`。
 
 当前 `exhq` 已实现：
 
@@ -299,7 +360,16 @@ go run ./cmd/marketd exquote-history-bars \
 - Level-2 认证行情；
 - ClickHouse 持久化。
 
-公共 ExHQ server 可用性不稳定。2026-06-07 实测：`112.74.214.43:7727`、`120.25.218.6:7727`、`47.102.108.214:7727`、`116.205.143.214:7727`、`124.71.223.19:7727` 可建立 TCP，其中多台能返回 instrument count，`47.102.108.214:7727` 能返回 instrument list；但 quote/K 线/分时/分笔请求在这些节点上出现 timeout 或 connection reset。非交易日维护、节点能力差异和公开访问限制都可能导致这种现象。
+公共 ExHQ server 可用性不稳定。2026-06-07 实测：
+
+| server | live 结果 |
+| --- | --- |
+| `47.112.95.207:7720` | TCP 可连；`instrument count` / `instrument list` 可返回；market list、quote/K 线/分时/分笔超时 |
+| `47.102.108.214:7727` | TCP 可连；`instrument list` 可返回；quote/K 线/分时/分笔 reset |
+| `112.74.214.43:7727` / `120.25.218.6:7727` / `116.205.143.214:7727` / `124.71.223.19:7727` | TCP 可连；可返回 `instrument count`；其他请求超时 |
+| `61.152.107.141:7727` / `121.14.110.210:7727` | 当前网络下 TCP 超时 |
+
+因此当前实现状态要区分两层：协议和 CLI 已实现；public server live 只验证到 catalog 能力。quote/K 线/分时/分笔需要交易日、券商账号线路或其他可用 ExHQ server 继续验证。
 
 ### 时间字段语义
 
@@ -356,9 +426,9 @@ go run ./cmd/marketd quote \
 
 `exhq`：
 
-- 当前已实现扩展市场列表和单合约 quote。
+- 当前已实现扩展市场列表、品种数量/列表、单合约 quote、K 线、分时、分笔和历史读取接口。
 - 仍然独立于标准 A 股 `hq` client。
-- 不支持 `exhq` K 线、分时、分笔、历史和品种列表。
+- 暂不支持 ExHQ ClickHouse 持久化和 Level-2 认证行情。
 - 不应和标准 A 股 `hq` client 混在同一个协议路径里。
 
 ## 实现原理
@@ -728,6 +798,21 @@ uint32 start
 uint16 count
 ```
 
+扩展品种列表响应：
+
+```text
+uint32 start
+uint16 count
+count * 64-byte record:
+  uint8 category
+  uint8 market
+  byte[3] unused
+  char[9] code
+  char[17] name
+  char[9] desc
+  byte[24] reserved
+```
+
 扩展 K 线请求：
 
 ```text
@@ -742,7 +827,106 @@ uint16 count
 
 `category` 使用 TDX/pytdx 的数字周期：`0=5m`、`1=15m`、`2=30m`、`3=1h`、`4=day`、`5=week`、`6=month`、`7=ExHQ 1m`、`8=1m`、`9=day`、`10=quarter`、`11=year`。
 
-分时、分笔和历史接口也按 pytdx ExHQ parser 的固定包实现；这些命令只读取并输出 JSON，不做落库。
+扩展 K 线响应跳过前 18 字节后读取 `uint16 count`，每条记录包含 4 字节日期时间和 28 字节数据：
+
+```text
+datetime:
+  category < 4 or category in (7, 8):
+    uint16 packed_day
+    uint16 packed_minute
+  otherwise:
+    uint32 yyyymmdd
+
+data:
+  float32 open, high, low, close
+  uint32 position
+  uint32 trade
+  float32 price
+```
+
+分时请求：
+
+```text
+01 07 08 00 01 01 0c 00 0c 00 0b 24
+uint8 market
+char[9] code
+```
+
+历史分时请求：
+
+```text
+01 01 30 00 01 01 10 00 10 00 0c 24
+uint32 date_yyyymmdd
+uint8 market
+char[9] code
+```
+
+分时响应记录：
+
+```text
+uint16 raw_time        # hour = raw_time / 60, minute = raw_time % 60
+float32 price
+float32 avg_price
+uint32 volume
+uint32 open_interest
+```
+
+分笔请求：
+
+```text
+01 01 08 00 03 01 12 00 12 00 fc 23
+uint8 market
+char[9] code
+int32 start
+uint16 count
+```
+
+历史分笔请求：
+
+```text
+01 01 30 00 02 01 16 00 16 00 06 24
+uint32 date_yyyymmdd
+uint8 market
+char[9] code
+int32 start
+uint16 count
+```
+
+分笔响应记录：
+
+```text
+uint16 raw_time
+uint32 price
+uint32 volume
+int32 zengcang
+uint16 nature
+```
+
+`nature` 会拆成 `nature_mark`、`nature_value`、`nature_name` 和 `direction`。港股类市场 `31` / `48` 按 pytdx 兼容逻辑将 `nature=0/256` 映射为 `B` / `S`。
+
+历史 K 线范围请求：
+
+```text
+01 01 38 92 00 01 16 00 16 00 0d 24
+uint8 market
+char[9] code
+uint16 category = 7
+uint32 start_date_yyyymmdd
+uint32 end_date_yyyymmdd
+```
+
+历史 K 线范围响应记录为 32 字节：
+
+```text
+uint16 packed_day
+uint16 packed_minute
+float32 open, high, low, close
+uint32 position
+uint32 trade
+float32 settlement_price
+```
+
+这些命令只读取并输出 JSON，不做落库。
 
 ### CLI 错误处理
 
@@ -814,19 +998,19 @@ go run ./cmd/marketd quote-sweep \
 
 ```bash
 go run ./cmd/marketd exquote-markets \
-  --server 47.102.108.214:7727
+  --server <exhq-server>
 ```
 
 扩展品种列表：
 
 ```bash
 go run ./cmd/marketd exquote-count \
-  --server 112.74.214.43:7727
+  --server 47.112.95.207:7720
 
 go run ./cmd/marketd exquote-instruments \
   --start 0 \
   --count 20 \
-  --server 47.102.108.214:7727
+  --server 47.112.95.207:7720
 ```
 
 扩展品种 quote：
@@ -834,24 +1018,36 @@ go run ./cmd/marketd exquote-instruments \
 ```bash
 go run ./cmd/marketd exquote \
   --market 47 \
-  --code ICL0 \
-  --server 47.102.108.214:7727
+  --code TSL8 \
+  --server 47.112.95.207:7720
 ```
 
 扩展 K 线 / 分时 / 分笔：
 
 ```bash
 go run ./cmd/marketd exquote-bars \
-  --market 47 --code ICL0 --category 4 --start 0 --count 100 \
-  --server 47.102.108.214:7727
+  --market 47 --code TSL8 --category 4 --start 0 --count 100 \
+  --server 47.112.95.207:7720
 
 go run ./cmd/marketd exquote-minute \
-  --market 47 --code ICL0 \
-  --server 47.102.108.214:7727
+  --market 47 --code TSL8 \
+  --server 47.112.95.207:7720
+
+go run ./cmd/marketd exquote-history-minute \
+  --market 47 --code TSL8 --date 20260605 \
+  --server 47.112.95.207:7720
 
 go run ./cmd/marketd exquote-transactions \
-  --market 47 --code ICL0 --start 0 --count 1800 \
-  --server 47.102.108.214:7727
+  --market 47 --code TSL8 --start 0 --count 1800 \
+  --server 47.112.95.207:7720
+
+go run ./cmd/marketd exquote-history-transactions \
+  --market 47 --code TSL8 --date 20260605 --start 0 --count 1800 \
+  --server 47.112.95.207:7720
+
+go run ./cmd/marketd exquote-history-bars \
+  --market 74 --code BABA --start-date 20260601 --end-date 20260605 \
+  --server 47.112.95.207:7720
 ```
 
 北交所实时行情：

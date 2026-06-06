@@ -12,11 +12,19 @@ import (
 )
 
 type Server struct {
-	repo Repository
+	repo        Repository
+	tdxProvider *TDXProvider
 }
 
 func NewServer(repo Repository) *Server {
-	return &Server{repo: repo}
+	return NewServerWithTDXProvider(repo, DefaultTDXProvider())
+}
+
+func NewServerWithTDXProvider(repo Repository, provider *TDXProvider) *Server {
+	if provider == nil {
+		provider = DefaultTDXProvider()
+	}
+	return &Server{repo: repo, tdxProvider: provider}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -24,6 +32,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/bars", s.handleBars)
 	mux.HandleFunc("GET /api/v1/resolve-symbol", s.handleResolveSymbol)
+	s.registerTDXRoutes(mux)
 	return mux
 }
 
