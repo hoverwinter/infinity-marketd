@@ -31,11 +31,11 @@ Query service and CLI commands:
 go run ./cmd/infinity querier serve --config examples/config.example.yaml --listen 127.0.0.1:8808
 
 go run ./cmd/infinity querier health --url http://127.0.0.1:8808
-go run ./cmd/infinity querier bars --url http://127.0.0.1:8808 --market sh --symbol 600519 --period 1d --since 2024-01-01
+go run ./cmd/infinity querier bars --url http://127.0.0.1:8808 --market sh --symbol 600519 --period 1d --since 2024-01-01 --until 2024-12-31
 go run ./cmd/infinity querier bars --url http://127.0.0.1:8808 --market sh --symbol 600519 --period 1m --since "2026-01-01 09:30:00" --until "2026-01-01 15:00:00"
 ```
 
-`infinity querier bars` calls the querier HTTP service. The CLI does not duplicate ClickHouse SQL logic.
+`infinity querier bars` calls the querier HTTP service under `/api/v1`. The CLI does not duplicate ClickHouse SQL logic. `--since` and `--until` are inclusive; for minute bars, a date-only `--until 2026-01-01` includes the whole trading date.
 
 Explicit file imports are also supported:
 

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/hoverwinter/infinity-marketd/internal/tdx"
 )
 
 type Server struct {
@@ -19,8 +21,9 @@ func NewServer(repo Repository) *Server {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", s.handleHealth)
-	mux.HandleFunc("GET /v1/bars", s.handleBars)
+	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
+	mux.HandleFunc("GET /api/v1/bars", s.handleBars)
+	mux.HandleFunc("GET /api/v1/resolve-symbol", s.handleResolveSymbol)
 	return mux
 }
 
@@ -29,7 +32,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, Health{Status: "ok"})
+	writeJSON(w, http.StatusOK, Health{Status: "ok", Version: Version, SchemaVersion: SchemaVersion})
 }
 
 func (s *Server) handleBars(w http.ResponseWriter, r *http.Request) {
@@ -40,6 +43,15 @@ func (s *Server) handleBars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleResolveSymbol(w http.ResponseWriter, r *http.Request) {
+	symbol := strings.TrimSpace(r.URL.Query().Get("symbol"))
+	if !symbolPattern.MatchString(symbol) {
+		writeError(w, http.StatusBadRequest, validationError("symbol must be six digits"))
+		return
+	}
+	writeJSON(w, http.StatusOK, SymbolResolution{Symbol: symbol, Market: tdx.InferMarketFromCode(symbol)})
 }
 
 func barQueryFromRequest(r *http.Request) BarQuery {

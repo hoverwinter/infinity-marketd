@@ -71,6 +71,21 @@ func TestQuerierBarsCommand(t *testing.T) {
 	}
 }
 
+func TestQuerierResolveSymbolCommand(t *testing.T) {
+	server := httptest.NewServer(querier.NewServer(cliRepo{}).Handler())
+	defer server.Close()
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"querier", "resolve-symbol", "--url", server.URL, "--symbol", "920002"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if !strings.Contains(out.String(), `"market": "bj"`) {
+		t.Fatalf("output=%s", out.String())
+	}
+}
+
 func TestQuerierBarsCommandReportsServiceError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)

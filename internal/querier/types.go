@@ -5,8 +5,15 @@ import (
 	"time"
 )
 
+const (
+	Version       = "0.1.0"
+	SchemaVersion = "2026-06-06"
+)
+
 type Health struct {
-	Status string `json:"status"`
+	Status        string `json:"status"`
+	Version       string `json:"version"`
+	SchemaVersion string `json:"schema_version"`
 }
 
 type BarQuery struct {
@@ -35,6 +42,11 @@ type Bar struct {
 type BarResult struct {
 	Query BarQuery `json:"query"`
 	Bars  []Bar    `json:"bars"`
+}
+
+type SymbolResolution struct {
+	Symbol string `json:"symbol"`
+	Market string `json:"market"`
 }
 
 type Repository interface {

@@ -45,6 +45,8 @@ func runQuerier(ctx context.Context, args []string, stdout io.Writer, stderr io.
 		return runQuerierHealth(ctx, args[1:], stdout, stderr)
 	case "bars":
 		return runQuerierBars(ctx, args[1:], stdout, stderr)
+	case "resolve-symbol":
+		return runQuerierResolveSymbol(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printQuerierUsage(stdout)
 		return 0
@@ -137,6 +139,24 @@ func runQuerierBars(ctx context.Context, args []string, stdout io.Writer, stderr
 	return 0
 }
 
+func runQuerierResolveSymbol(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var baseURL, symbol string
+	fs := newFlagSet("querier resolve-symbol", stderr)
+	registerServiceFlags(fs, &baseURL)
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	client := querier.NewHTTPClient(baseURL, nil)
+	result, err := client.ResolveSymbol(ctx, symbol)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	writeJSON(stdout, result)
+	return 0
+}
+
 func registerServiceFlags(fs *flag.FlagSet, baseURL *string) {
 	fs.StringVar(baseURL, "url", envOrDefault("INFINITY_QUERIER_URL", "http://127.0.0.1:8808"), "querier service URL")
 }
@@ -172,4 +192,5 @@ func printQuerierUsage(out io.Writer) {
 	fmt.Fprintln(out, "  serve")
 	fmt.Fprintln(out, "  health")
 	fmt.Fprintln(out, "  bars")
+	fmt.Fprintln(out, "  resolve-symbol")
 }

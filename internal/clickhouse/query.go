@@ -29,11 +29,12 @@ func (s *Store) dailyBars(ctx context.Context, query querier.BarQuery) (querier.
 	if err != nil {
 		return querier.BarResult{}, err
 	}
-	where, args, err := barWhere(query, "trade_date", parseDateBound)
+	where, args, err := barWhere(query, "trade_date", parseDateBound, parseDateUntilBound)
 	if err != nil {
 		return querier.BarResult{}, err
 	}
-	stmt := fmt.Sprintf("SELECT market, symbol, trade_date, open, high, low, close, volume, amount FROM %s WHERE %s ORDER BY trade_date ASC LIMIT %d", table, where, query.Limit)
+	columns := "market, symbol, trade_date, open, high, low, close, volume, amount"
+	stmt := barsSQL(table, columns, where, "trade_date", query.Limit, hasTimeBounds(query))
 	rows, err := s.conn.Query(ctx, stmt, args...)
 	if err != nil {
 		return querier.BarResult{}, err
@@ -58,11 +59,12 @@ func (s *Store) minuteBars(ctx context.Context, query querier.BarQuery) (querier
 	if err != nil {
 		return querier.BarResult{}, err
 	}
-	where, args, err := barWhere(query, "bar_time", parseDateTimeBound)
+	where, args, err := barWhere(query, "bar_time", parseDateTimeBound, parseDateTimeUntilBound)
 	if err != nil {
 		return querier.BarResult{}, err
 	}
-	stmt := fmt.Sprintf("SELECT market, symbol, bar_time, trade_date, open, high, low, close, volume, amount FROM %s WHERE %s ORDER BY bar_time ASC LIMIT %d", table, where, query.Limit)
+	columns := "market, symbol, bar_time, trade_date, open, high, low, close, volume, amount"
+	stmt := barsSQL(table, columns, where, "bar_time", query.Limit, hasTimeBounds(query))
 	rows, err := s.conn.Query(ctx, stmt, args...)
 	if err != nil {
 		return querier.BarResult{}, err
@@ -84,11 +86,11 @@ func (s *Store) minuteBars(ctx context.Context, query querier.BarQuery) (querier
 	return result, rows.Err()
 }
 
-func barWhere(query querier.BarQuery, timeColumn string, parseBound func(string) (time.Time, error)) (string, []any, error) {
+func barWhere(query querier.BarQuery, timeColumn string, parseSince func(string) (time.Time, error), parseUntil func(string) (time.Time, string, error)) (string, []any, error) {
 	clauses := []string{"market = ?", "symbol = ?"}
 	args := []any{query.Market, query.Symbol}
 	if query.Since != "" {
-		t, err := parseBound(query.Since)
+		t, err := parseSince(query.Since)
 		if err != nil {
 			return "", nil, err
 		}
@@ -96,14 +98,25 @@ func barWhere(query querier.BarQuery, timeColumn string, parseBound func(string)
 		args = append(args, t)
 	}
 	if query.Until != "" {
-		t, err := parseBound(query.Until)
+		t, operator, err := parseUntil(query.Until)
 		if err != nil {
 			return "", nil, err
 		}
-		clauses = append(clauses, timeColumn+" < ?")
+		clauses = append(clauses, timeColumn+" "+operator+" ?")
 		args = append(args, t)
 	}
 	return strings.Join(clauses, " AND "), args, nil
+}
+
+func barsSQL(table string, columns string, where string, timeColumn string, limit int, hasBounds bool) string {
+	if hasBounds {
+		return fmt.Sprintf("SELECT %s FROM %s WHERE %s ORDER BY %s ASC LIMIT %d", columns, table, where, timeColumn, limit)
+	}
+	return fmt.Sprintf("SELECT %s FROM (SELECT %s FROM %s WHERE %s ORDER BY %s DESC LIMIT %d) ORDER BY %s ASC", columns, columns, table, where, timeColumn, limit, timeColumn)
+}
+
+func hasTimeBounds(query querier.BarQuery) bool {
+	return query.Since != "" || query.Until != ""
 }
 
 func tableForPeriod(period string) string {
@@ -128,6 +141,14 @@ func parseDateBound(value string) (time.Time, error) {
 	return time.Time{}, querier.ValidationError{Message: fmt.Sprintf("invalid date %q, expected YYYY-MM-DD", value)}
 }
 
+func parseDateUntilBound(value string) (time.Time, string, error) {
+	t, err := parseDateBound(value)
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	return t, "<=", nil
+}
+
 func parseDateTimeBound(value string) (time.Time, error) {
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	for _, layout := range []string{"2006-01-02", "2006-01-02 15:04:05", "2006-01-02T15:04:05", time.RFC3339} {
@@ -137,4 +158,16 @@ func parseDateTimeBound(value string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, querier.ValidationError{Message: fmt.Sprintf("invalid datetime %q", value)}
+}
+
+func parseDateTimeUntilBound(value string) (time.Time, string, error) {
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	if t, err := time.ParseInLocation("2006-01-02", value, loc); err == nil {
+		return t.AddDate(0, 0, 1), "<", nil
+	}
+	t, err := parseDateTimeBound(value)
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	return t, "<=", nil
 }

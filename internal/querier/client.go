@@ -25,7 +25,7 @@ func NewHTTPClient(baseURL string, client *http.Client) *HTTPClient {
 
 func (c *HTTPClient) Health(ctx context.Context) (Health, error) {
 	var health Health
-	if err := c.getJSON(ctx, "/health", nil, &health); err != nil {
+	if err := c.getJSON(ctx, "/api/v1/health", nil, &health); err != nil {
 		return health, err
 	}
 	return health, nil
@@ -46,7 +46,17 @@ func (c *HTTPClient) Bars(ctx context.Context, query BarQuery) (BarResult, error
 		values.Set("limit", strconv.Itoa(query.Limit))
 	}
 	var result BarResult
-	if err := c.getJSON(ctx, "/v1/bars", values, &result); err != nil {
+	if err := c.getJSON(ctx, "/api/v1/bars", values, &result); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (c *HTTPClient) ResolveSymbol(ctx context.Context, symbol string) (SymbolResolution, error) {
+	values := url.Values{}
+	values.Set("symbol", symbol)
+	var result SymbolResolution
+	if err := c.getJSON(ctx, "/api/v1/resolve-symbol", values, &result); err != nil {
 		return result, err
 	}
 	return result, nil

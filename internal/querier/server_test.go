@@ -47,7 +47,7 @@ func TestServerBars(t *testing.T) {
 	server := httptest.NewServer(NewServer(repo).Handler())
 	defer server.Close()
 
-	resp, err := http.Get(server.URL + "/v1/bars?market=sh&symbol=600519&period=1d&limit=5")
+	resp, err := http.Get(server.URL + "/api/v1/bars?market=sh&symbol=600519&period=1d&limit=5")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,13 +72,57 @@ func TestServerBarsValidation(t *testing.T) {
 	server := httptest.NewServer(NewServer(repo).Handler())
 	defer server.Close()
 
-	resp, err := http.Get(server.URL + "/v1/bars?market=bad&symbol=600519&period=1d")
+	resp, err := http.Get(server.URL + "/api/v1/bars?market=bad&symbol=600519&period=1d")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status=%d", resp.StatusCode)
+	}
+}
+
+func TestServerHealthIncludesVersion(t *testing.T) {
+	repo := &fakeRepo{}
+	server := httptest.NewServer(NewServer(repo).Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/v1/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var health Health
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		t.Fatal(err)
+	}
+	if health.Status != "ok" || health.Version == "" || health.SchemaVersion == "" {
+		t.Fatalf("health=%+v", health)
+	}
+}
+
+func TestServerResolveSymbol(t *testing.T) {
+	repo := &fakeRepo{}
+	server := httptest.NewServer(NewServer(repo).Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/v1/resolve-symbol?symbol=920002")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var result SymbolResolution
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Market != "bj" || result.Symbol != "920002" {
+		t.Fatalf("result=%+v", result)
 	}
 }
 
@@ -94,5 +138,20 @@ func TestHTTPClientBars(t *testing.T) {
 	}
 	if len(result.Bars) != 1 {
 		t.Fatalf("bars=%d", len(result.Bars))
+	}
+}
+
+func TestHTTPClientResolveSymbol(t *testing.T) {
+	repo := &fakeRepo{}
+	server := httptest.NewServer(NewServer(repo).Handler())
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, server.Client())
+	result, err := client.ResolveSymbol(context.Background(), "600519")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Market != "sh" {
+		t.Fatalf("result=%+v", result)
 	}
 }
