@@ -1,0 +1,290 @@
+# ClickHouse Storage
+
+本文档是 `infinity-marketd` 的 ClickHouse 存储设计说明。实现以 `internal/clickhouse/schema.go` 为准，本文档用于解释数据库职责、表结构、分区选择和操作约束。
+
+## Safety Rules
+
+`infinity-marketd` 的 assistant workflow 不允许删除 ClickHouse 数据库或表。
+
+禁止执行：
+
+```sql
+DROP DATABASE ...
+DROP TABLE ...
+TRUNCATE TABLE ...
+DETACH TABLE ...
+```
+
+如果需要重建 schema，只能先给出迁移计划，由人工 operator 决定并手动执行破坏性步骤。优先选择创建新表、导入验证、再人工切换，而不是由 assistant 自动删除旧库表。
+
+## Databases
+
+```text
+infinity_market  # market facts and derived market data
+infinity_ops     # marketd watermarks, task runs, and data quality issues
+```
+
+不要使用 `infinity` 作为 marketd 的目标 database。`configs/config.yaml` 应指向 `infinity_market`。
+
+## Configuration
+
+当前配置文件格式：
+
+```yaml
+clickhouse:
+  user: "default"
+  host: "192.168.28.210"
+  port: 9000
+  passwd: ""
+  database: "infinity_market"
+
+tdx:
+  root: "data"
+
+runtime:
+  timezone: "Asia/Shanghai"
+  batch_size: 10000
+```
+
+`database` 映射到 market database。ops database 固定默认是 `infinity_ops`，除非通过配置或环境变量显式覆盖。
+
+## Fact Table Rules
+
+Market fact tables are canonical facts:
+
+- No `source`, `source_key`, `source_file`, `version`, or `updated_at` columns.
+- No cross-row derived metrics in fact tables.
+- `marketd` resolves duplicate or conflicting inputs before writing facts.
+- Re-imports write by the same logical key and rely on `ReplacingMergeTree` to merge physical duplicates.
+- Idempotency must not be implemented by deleting tables or databases.
+
+`pct_chg` is not a `.day` fact. It depends on previous valid close, so it belongs in a derived table or refresh job.
+
+## Tables
+
+### infinity_market.a_share_bars_1d
+
+Canonical A-share daily OHLCV facts.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_bars_1d
+(
+    market LowCardinality(String),
+    symbol String,
+    trade_date Date,
+    open Float64,
+    high Float64,
+    low Float64,
+    close Float64,
+    volume UInt64,
+    amount Float64
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(trade_date)
+ORDER BY (market, symbol, trade_date);
+```
+
+Logical key:
+
+```text
+market + symbol + trade_date
+```
+
+Partition rationale:
+
+- Daily data is relatively small for ClickHouse.
+- A full A-share daily import is about tens of millions of rows, not billions.
+- Monthly partitions caused too many active parts during file-by-file imports.
+- Year partitions reduce part count while preserving useful historical data management.
+
+Development import verification on 2026-06-06:
+
+```text
+rows: 29,024,981
+active_parts: 166
+has_pct_chg: false
+partition: toYear(trade_date)
+```
+
+### infinity_market.a_share_bars_1m
+
+Canonical A-share 1-minute OHLCV facts.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_bars_1m
+(
+    market LowCardinality(String),
+    symbol String,
+    bar_time DateTime('Asia/Shanghai'),
+    trade_date Date,
+    open Float64,
+    high Float64,
+    low Float64,
+    close Float64,
+    volume UInt64,
+    amount Float64
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYYYYMM(trade_date)
+ORDER BY (market, symbol, bar_time);
+```
+
+Logical key:
+
+```text
+market + symbol + bar_time
+```
+
+Partition rationale:
+
+- 1-minute data is much larger than daily data.
+- Month partitioning is still the current working decision for minute bars.
+- The decision must be validated with real 1m data volume and query patterns.
+- The import path must batch by partition and avoid small per-symbol inserts.
+
+### infinity_market.a_share_bars_5m
+
+Canonical A-share 5-minute OHLCV facts.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_bars_5m
+(
+    market LowCardinality(String),
+    symbol String,
+    bar_time DateTime('Asia/Shanghai'),
+    trade_date Date,
+    open Float64,
+    high Float64,
+    low Float64,
+    close Float64,
+    volume UInt64,
+    amount Float64
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYYYYMM(trade_date)
+ORDER BY (market, symbol, bar_time);
+```
+
+Logical key:
+
+```text
+market + symbol + bar_time
+```
+
+5-minute bars stay separate from 1-minute bars. Do not combine them into one table with `bar_interval`.
+
+### infinity_market.a_share_daily_derived
+
+Daily derived metrics that are rebuilt from canonical daily facts.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_daily_derived
+(
+    market LowCardinality(String),
+    symbol String,
+    trade_date Date,
+    prev_close Nullable(Float64),
+    pct_chg Nullable(Float64),
+    computed_at DateTime64(3) DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(computed_at)
+PARTITION BY toYear(trade_date)
+ORDER BY (trade_date, market, symbol);
+```
+
+`pct_chg` is computed as:
+
+```text
+(close - prev_close) / prev_close * 100
+```
+
+Use `NULL` when previous close is missing or non-positive.
+
+### infinity_ops.watermarks
+
+Latest import status for each dataset asset.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_ops.watermarks
+(
+    dataset LowCardinality(String),
+    asset LowCardinality(String),
+    status LowCardinality(String),
+    min_watermark Nullable(DateTime64(3)),
+    max_watermark Nullable(DateTime64(3)),
+    rows_written UInt64,
+    message String,
+    updated_at DateTime64(3) DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY (dataset, asset);
+```
+
+### infinity_ops.task_runs
+
+Import task history.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_ops.task_runs
+(
+    run_id String,
+    dataset LowCardinality(String),
+    task_type LowCardinality(String),
+    status LowCardinality(String),
+    target_table LowCardinality(String),
+    input_path String,
+    input_format LowCardinality(String),
+    params String,
+    started_at DateTime64(3),
+    finished_at Nullable(DateTime64(3)),
+    duration_ms Nullable(UInt64),
+    rows_written UInt64,
+    rows_skipped UInt64,
+    error String,
+    updated_at DateTime64(3) DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(started_at)
+ORDER BY (dataset, started_at, run_id);
+```
+
+### infinity_ops.data_quality_issues
+
+Parser and import quality issues.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_ops.data_quality_issues
+(
+    issue_id String,
+    run_id String,
+    dataset LowCardinality(String),
+    severity LowCardinality(String),
+    issue_type LowCardinality(String),
+    market Nullable(String),
+    symbol Nullable(String),
+    logical_key String,
+    input_path String,
+    input_record_offset Nullable(UInt64),
+    observed_at DateTime64(3),
+    message String,
+    details String
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(observed_at)
+ORDER BY (dataset, observed_at, severity, issue_type);
+```
+
+## Import Guidance
+
+Daily bulk imports should group rows by year partition and insert sufficiently large batches. This avoids the two common ClickHouse failure modes seen during development:
+
+- too many partitions in one INSERT block;
+- too many active parts caused by many tiny per-symbol inserts.
+
+Minute imports should group by month partition until real 1m/5m volume proves a different strategy is better.
+
+## Current Open Questions
+
+- Whether 1-minute and 5-minute tables should stay monthly partitioned after importing real full-market minute data.
+- Whether derived daily refresh should be a standalone CLI command or scheduled job.
+- Whether market fact numeric prices should remain `Float64` or move to fixed decimal types after downstream query needs are clearer.

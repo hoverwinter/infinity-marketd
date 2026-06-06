@@ -1,0 +1,79 @@
+# infinity-marketd
+
+`infinity-marketd` is a Go market data daemon for importing, normalizing, and writing structured market data into ClickHouse.
+
+The first supported input format is local TongDaXin data:
+
+- `.day` daily bars
+- `.lc1` / `.1` 1-minute bars
+- `.lc5` / `.5` 5-minute bars
+
+It provides ClickHouse schema bootstrap, idempotent batch writes, watermarks, task run records, and data quality diagnostics.
+
+## Commands
+
+Market data import commands:
+
+```bash
+go run ./cmd/marketd bootstrap --dry-run
+go run ./cmd/marketd bootstrap --config examples/config.example.yaml
+
+go run ./cmd/marketd status --config examples/config.example.yaml
+
+go run ./cmd/marketd import-tdx-day --root ~/tdx-data --code 600519 --dry-run
+go run ./cmd/marketd import-tdx-1m --root ~/tdx-data --code 600519 --dry-run
+go run ./cmd/marketd import-tdx-5m --root ~/tdx-data --code 600519 --dry-run
+```
+
+Query service and CLI commands:
+
+```bash
+go run ./cmd/infinity querier serve --config examples/config.example.yaml --listen 127.0.0.1:8808
+
+go run ./cmd/infinity querier health --url http://127.0.0.1:8808
+go run ./cmd/infinity querier bars --url http://127.0.0.1:8808 --market sh --symbol 600519 --period 1d --since 2024-01-01
+go run ./cmd/infinity querier bars --url http://127.0.0.1:8808 --market sh --symbol 600519 --period 1m --since "2026-01-01 09:30:00" --until "2026-01-01 15:00:00"
+```
+
+`infinity querier bars` calls the querier HTTP service. The CLI does not duplicate ClickHouse SQL logic.
+
+Explicit file imports are also supported:
+
+```bash
+go run ./cmd/marketd import-tdx-day --file ~/tdx-data/vipdoc/sh/lday/sh600519.day
+go run ./cmd/marketd import-tdx-1m --file ~/tdx-data/vipdoc/sh/minline/sh600519.lc1
+go run ./cmd/marketd import-tdx-5m --file ~/tdx-data/vipdoc/sh/fzline/sh600519.lc5
+```
+
+## ClickHouse Tables
+
+Market fact tables:
+
+- `infinity_market.a_share_bars_1d`
+- `infinity_market.a_share_bars_1m`
+- `infinity_market.a_share_bars_5m`
+
+Operational tables:
+
+- `infinity_ops.watermarks`
+- `infinity_ops.task_runs`
+- `infinity_ops.data_quality_issues`
+
+Fact tables do not model source or version. `marketd` resolves input conflicts before writing canonical market facts.
+
+## Configuration
+
+Configuration precedence:
+
+```text
+CLI flags > environment variables > config file > defaults
+```
+
+Use `examples/config.example.yaml` as a starting point. Do not commit real credentials.
+
+## Verification
+
+```bash
+go test ./...
+openspec validate build-tdx-clickhouse-mvp
+```

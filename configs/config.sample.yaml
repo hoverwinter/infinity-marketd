@@ -1,0 +1,13 @@
+clickhouse:
+  user: "default"
+  host: "192.168.28.210"
+  port: 9000
+  passwd: ""
+  database: "infinity_market"
+
+tdx:
+  root: "data"
+
+runtime:
+  timezone: "Asia/Shanghai"
+  batch_size: 10000
