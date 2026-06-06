@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -60,6 +61,34 @@ func TestImportDayRootDryRunWithoutCode(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "quality_issues: 0") {
 		t.Fatalf("output has quality issue:\n%s", out.String())
+	}
+}
+
+func TestImportVIPDocZipDryRunCommand(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "vipdoc.zip")
+	writeZip(t, zipPath, map[string][]byte{
+		"vipdoc/sh/minline/sh600519.lc1": lcMinuteRecord(9*60 + 31),
+		"vipdoc/sh/fzline/sh600519.lc5":  lcMinuteRecord(9*60 + 35),
+		"vipdoc/sh/lday/sh600519.day":    dailyRecord(),
+	})
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"import-tdx-vipdoc-zip", "--file", zipPath, "--dry-run"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	for _, want := range []string{
+		"mode: dry-run",
+		"files: 2",
+		"files_1m: 1",
+		"files_5m: 1",
+		"rows_written: 2",
+		"quality_issues: 0",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
 	}
 }
 
@@ -631,6 +660,27 @@ func writeFile(t *testing.T, path string, data []byte) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeZip(t *testing.T, path string, files map[string][]byte) {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, raw := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

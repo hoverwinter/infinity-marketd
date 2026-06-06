@@ -61,6 +61,8 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runImport(ctx, args[1:], stdout, stderr, tdx.Period1m)
 	case "import-tdx-5m":
 		return runImport(ctx, args[1:], stdout, stderr, tdx.Period5m)
+	case "import-tdx-vipdoc-zip":
+		return runImportVIPDocZip(ctx, args[1:], stdout, stderr)
 	case "quote":
 		return runQuote(ctx, args[1:], stdout, stderr)
 	case "quote-probe":
@@ -1066,6 +1068,73 @@ func runImport(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 	return 0
 }
 
+func runImportVIPDocZip(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
+	var file, periodText, market, since, until string
+	var dryRun bool
+	fs := newFlagSet("import-tdx-vipdoc-zip", stderr)
+	config.RegisterCommonFlags(fs, &overrides)
+	fs.StringVar(&file, "file", "", "vipdoc zip file")
+	fs.StringVar(&periodText, "period", "all", "period to import: all, 1m, or 5m")
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&since, "since", "", "start date/time")
+	fs.StringVar(&until, "until", "", "end date/time")
+	fs.BoolVar(&dryRun, "dry-run", false, "parse and summarize without writing")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(file) == "" {
+		fmt.Fprintln(stderr, "--file is required")
+		return 2
+	}
+	periods, err := parseVIPDocZipPeriods(periodText)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	cfg, err := config.Load(overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	var store *chstore.Store
+	if !dryRun {
+		store, err = chstore.Open(ctx, cfg.ClickHouse)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer store.Close()
+	}
+	summary, err := ingest.ImportVIPDocZip(ctx, ingest.VIPDocZipOptions{
+		ZipPath:   file,
+		Periods:   periods,
+		Market:    market,
+		Since:     since,
+		Until:     until,
+		DryRun:    dryRun,
+		Store:     store,
+		Timezone:  cfg.Runtime.Timezone,
+		BatchSize: cfg.Runtime.BatchSize,
+		Progress: func(processed int, summary ingest.VIPDocZipSummary) {
+			if processed == 1 || processed%100 == 0 || processed == summary.Files {
+				fmt.Fprintf(stderr, "processed %d/%d files, rows_1m=%d, rows_5m=%d, issues=%d\n", processed, summary.Files, summary.Rows1m, summary.Rows5m, summary.QualityIssues)
+			}
+		},
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printVIPDocZipSummary(stdout, summary)
+	return 0
+}
+
 type bulkImportOptions struct {
 	Period    tdx.Period
 	Root      string
@@ -1203,6 +1272,23 @@ func printBulkSummary(out io.Writer, summary bulkImportSummary) {
 	fmt.Fprintf(out, "quality_issues: %d\n", summary.QualityIssues)
 }
 
+func printVIPDocZipSummary(out io.Writer, summary ingest.VIPDocZipSummary) {
+	mode := "write"
+	if summary.DryRun {
+		mode = "dry-run"
+	}
+	fmt.Fprintf(out, "mode: %s\n", mode)
+	fmt.Fprintf(out, "zip_path: %s\n", summary.ZipPath)
+	fmt.Fprintf(out, "files: %d\n", summary.Files)
+	fmt.Fprintf(out, "files_1m: %d\n", summary.Files1m)
+	fmt.Fprintf(out, "files_5m: %d\n", summary.Files5m)
+	fmt.Fprintf(out, "rows_written: %d\n", summary.RowsWritten)
+	fmt.Fprintf(out, "rows_1m: %d\n", summary.Rows1m)
+	fmt.Fprintf(out, "rows_5m: %d\n", summary.Rows5m)
+	fmt.Fprintf(out, "rows_skipped: %d\n", summary.RowsSkipped)
+	fmt.Fprintf(out, "quality_issues: %d\n", summary.QualityIssues)
+}
+
 func setupLogging(cfg config.Config, stderr io.Writer) (func(), bool) {
 	_, cleanup, err := logging.InitGlobal(cfg.Logging)
 	if err != nil {
@@ -1230,6 +1316,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  import-tdx-day")
 	fmt.Fprintln(out, "  import-tdx-1m")
 	fmt.Fprintln(out, "  import-tdx-5m")
+	fmt.Fprintln(out, "  import-tdx-vipdoc-zip")
 	fmt.Fprintln(out, "  quote")
 	fmt.Fprintln(out, "  quote-probe")
 	fmt.Fprintln(out, "  quote-sweep")
@@ -1267,6 +1354,19 @@ func datasetFor(period tdx.Period) string {
 		return "a_share_bars_5m"
 	default:
 		return string(period)
+	}
+}
+
+func parseVIPDocZipPeriods(value string) ([]tdx.Period, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "all":
+		return []tdx.Period{tdx.Period1m, tdx.Period5m}, nil
+	case "1m":
+		return []tdx.Period{tdx.Period1m}, nil
+	case "5m":
+		return []tdx.Period{tdx.Period5m}, nil
+	default:
+		return nil, fmt.Errorf("--period must be all, 1m, or 5m")
 	}
 }
 
