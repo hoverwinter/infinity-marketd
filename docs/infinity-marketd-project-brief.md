@@ -319,6 +319,8 @@ ORDER BY (market, symbol, bar_time);
 
 承载 A 股 1 分钟 OHLCV。TDX `.lc1` 使用 float32 price；兼容 `.1` 使用整数分价格，写入前统一归一化为 `Decimal64(4)`。
 
+该表是 canonical fact table。它按 `(market, symbol, bar_time)` 排序，优先服务单股时间序列查询、文件级导入/重导、连续性校验和回测读取。全市场分钟扫描不要通过改变该表排序键来解决，应使用短保留 scan 派生表。
+
 ### infinity_market.a_share_bars_5m
 
 ```sql
@@ -342,7 +344,7 @@ ORDER BY (market, symbol, bar_time);
 
 承载 A 股 5 分钟 OHLCV。首期支持 `.lc5` / `.5`，但不要把 5 分钟线混入 1 分钟表。
 
-分钟线的 `toYYYYMM(trade_date)` 是待验证设计。分钟线数据量远大于日线，如果导入和查询以月份为单位管理，月分区可能合理；如果主要按多年单股票回测扫描，年分区或更粗分区可能更合适。不要在没有 1m/5m 实际数据规模、导入批次和查询模式验证前固定最终结论。
+分钟线使用 `toYYYYMM(trade_date)` 月分区。分钟线数据量远大于日线，月分区便于回补、分区维护和冷热管理；按天分区会产生过多分区，按年分区会让 1 分钟单分区过大。
 
 同一表内的逻辑键只允许存在一份事实：
 
@@ -353,6 +355,42 @@ a_share_bars_5m: market + symbol + bar_time
 ```
 
 重复导入、补数、修正数据时按同一逻辑键写入新事实，由 `ReplacingMergeTree` 收敛。首期不引入显式 version。
+
+### infinity_market.a_share_bars_1m_scan / a_share_bars_5m_scan
+
+分钟 scan 表是短保留、少列、可重建的派生层，不是事实源。它们用于全市场分钟截面扫描，例如某一分钟按成交额、涨速、量比过滤排序。
+
+建议形态：
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_bars_1m_scan
+(
+    trade_date Date,
+    bar_time DateTime('Asia/Shanghai'),
+    market Enum8('sh' = 1, 'sz' = 2, 'bj' = 3),
+    symbol FixedString(6),
+    close Decimal64(4),
+    volume UInt64,
+    amount Float64,
+    prev_close Nullable(Decimal64(4)),
+    minute_ret Nullable(Float64),
+    volume_ratio Nullable(Float64),
+    computed_at DateTime64(3) DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(computed_at)
+PARTITION BY toYYYYMM(trade_date)
+ORDER BY (trade_date, bar_time, market, symbol)
+TTL trade_date + INTERVAL 12 MONTH DELETE;
+```
+
+`a_share_bars_5m_scan` 使用同样结构，从 `a_share_bars_5m` 重建。
+
+设计约束：
+
+1. 离线原始数据导入默认只写 `a_share_bars_1m` / `a_share_bars_5m`，不生成 scan 数据。
+2. scan 表只保存扫描必要列和少量派生指标，不完整复制所有 OHLCV 历史。
+3. scan 表保留短窗口，例如 3-12 个月；过期数据可删除，需要时从基础表重建。
+4. scan 刷新由显式命令或调度任务触发，例如 `refresh-minute-scan --period 1m --since ... --until ...`。
 
 ### infinity_market.a_share_intraday_points
 

@@ -72,6 +72,8 @@ Market fact tables are canonical facts:
 
 `pct_chg` is not a `.day` fact. It depends on previous valid close, so it belongs in a derived table or refresh job.
 
+Minute scan data follows the same rule. Local TDX 1-minute and 5-minute imports write only canonical OHLCV facts by default. Time-first scan tables are derived, short-retention, and rebuilt by explicit refresh jobs.
+
 ## Tables
 
 ### infinity_market.a_share_bars_1d
@@ -151,7 +153,8 @@ Partition rationale:
 
 - 1-minute data is much larger than daily data.
 - Month partitioning is still the current working decision for minute bars.
-- The decision must be validated with real 1m data volume and query patterns.
+- Canonical imports and single-symbol time-series queries are symbol-first, so the order key remains `(market, symbol, bar_time)`.
+- Full-market minute scans use a separate scan-derived table instead of changing this canonical order key.
 - The import path must batch by partition and avoid small per-symbol inserts.
 
 ### infinity_market.a_share_bars_5m
@@ -184,6 +187,53 @@ market + symbol + bar_time
 ```
 
 5-minute bars stay separate from 1-minute bars. Do not combine them into one table with `bar_interval`.
+
+### infinity_market.a_share_bars_1m_scan
+
+Short-retention 1-minute scan data rebuilt from canonical 1-minute facts.
+
+This table is for full-market minute scans such as "all stocks at 10:30 ordered by amount or minute return". It is not the source of truth and should not be written by offline TDX imports.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_bars_1m_scan
+(
+    trade_date Date,
+    bar_time DateTime('Asia/Shanghai'),
+    market LowCardinality(String),
+    symbol String,
+    close Float64,
+    volume UInt64,
+    amount Float64,
+    prev_close Nullable(Float64),
+    minute_ret Nullable(Float64),
+    volume_ratio Nullable(Float64),
+    computed_at DateTime64(3) DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(computed_at)
+PARTITION BY toYYYYMM(trade_date)
+ORDER BY (trade_date, bar_time, market, symbol)
+TTL trade_date + INTERVAL 12 MONTH DELETE;
+```
+
+Design constraints:
+
+- Keep the schema narrow. Do not copy full OHLCV unless a measured scan use case needs those columns.
+- Keep retention short, for example 3, 6, or 12 months.
+- Treat old scan rows as disposable. Rebuild them from `a_share_bars_1m` when needed.
+- Generate rows only through an explicit refresh job, never as a hidden side effect of `import-tdx-1m`.
+
+### infinity_market.a_share_bars_5m_scan
+
+Short-retention 5-minute scan data rebuilt from canonical 5-minute facts.
+
+The schema mirrors `a_share_bars_1m_scan`, but rows are rebuilt from `a_share_bars_5m`. It uses:
+
+```sql
+PARTITION BY toYYYYMM(trade_date)
+ORDER BY (trade_date, bar_time, market, symbol)
+```
+
+Generate rows only through an explicit refresh job, never as a hidden side effect of `import-tdx-5m`.
 
 ### infinity_market.a_share_daily_derived
 
@@ -295,8 +345,25 @@ Daily bulk imports should group rows by year partition and insert sufficiently l
 
 Minute imports should group by month partition until real 1m/5m volume proves a different strategy is better.
 
+Offline imports are raw data ingestion only:
+
+```text
+import-tdx-1m -> writes a_share_bars_1m only
+import-tdx-5m -> writes a_share_bars_5m only
+```
+
+Scan tables are refreshed separately, for example:
+
+```text
+marketd refresh-minute-scan --period 1m --since 2026-06-01 --until 2026-06-07
+marketd refresh-minute-scan --period 5m --since 2026-06-01 --until 2026-06-07
+```
+
+This keeps large offline backfills deterministic and prevents hidden write amplification. Operators decide when to pay the scan refresh cost.
+
 ## Current Open Questions
 
-- Whether 1-minute and 5-minute tables should stay monthly partitioned after importing real full-market minute data.
 - Whether derived daily refresh should be a standalone CLI command or scheduled job.
+- Whether minute scan refresh should be a standalone CLI command, scheduled job, or both.
+- Which scan metrics justify storage beyond `close`, `volume`, `amount`, `minute_ret`, and `volume_ratio`.
 - Whether market fact numeric prices should remain `Float64` or move to fixed decimal types after downstream query needs are clearer.
