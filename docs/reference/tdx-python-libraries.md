@@ -125,7 +125,8 @@ Current coverage:
 | zlib response handling | Implemented |
 | TDX variable integer price decoding | Implemented |
 | five-level depth | Implemented |
-| heartbeat / reconnect / best server selection | Not implemented |
+| server probe / fallback | Implemented through `quote-probe` and multi-server quote retry |
+| heartbeat / long-lived reconnect | Not implemented |
 | `bj` realtime quotes | Not implemented |
 
 ### `pytdx.exhq` Extended行情
@@ -170,7 +171,20 @@ Key fields:
 | `bid1..bid5`, `ask1..ask5` | 五档买卖价 |
 | `bid_vol1..5`, `ask_vol1..5` | 五档买卖量 |
 
-`marketd` status: not implemented. It should be a separate capability from A-share standard realtime quotes.
+`marketd` status: partially implemented as a separate capability from A-share standard realtime quotes.
+
+Implemented:
+
+- `marketd exquote-markets` for `get_markets`.
+- `marketd exquote --market <id> --code <instrument>` for `get_instrument_quote`.
+
+Not implemented:
+
+- instrument count/list;
+- K-line;
+- minute-time;
+- transaction and history APIs;
+- ClickHouse persistence.
 
 ### `pytdx.reader`
 
@@ -280,13 +294,13 @@ Frequency aliases and adjustment support are a major convenience layer:
 | mootdx quotes feature | marketd status |
 | --- | --- |
 | standard A-share realtime quote | Implemented through `marketd quote` |
-| server bestip selection | Not implemented |
+| server bestip selection | Partially implemented through `marketd quote-probe` |
 | online K-line | Not implemented |
 | online minute/time sharing | Not implemented |
 | online transaction records | Not implemented |
 | qfq/hfq adjustment | Not implemented |
 | F10/company/finance online data | Not implemented |
-| extended market quote | Not implemented |
+| extended market quote | Partially implemented through `marketd exquote` |
 
 ### `mootdx.reader`
 
@@ -383,6 +397,7 @@ CLI output commonly supports CSV, JSON, Excel, HDF5, depending on command and op
 - Local `.lc5` / `.5` 5-minute bars.
 - ClickHouse bootstrap and imports for canonical OHLCV facts.
 - Standard A-share realtime quote snapshots for `sh` / `sz`.
+- Extended market list and single instrument quote through TDX `exhq`.
 
 ### High-value next candidates
 

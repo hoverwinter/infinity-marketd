@@ -14,6 +14,7 @@ type Config struct {
 	ClickHouse ClickHouseConfig `yaml:"clickhouse"`
 	TDX        TDXConfig        `yaml:"tdx"`
 	Runtime    RuntimeConfig    `yaml:"runtime"`
+	Logging    LoggingConfig    `yaml:"logging"`
 }
 
 type ClickHouseConfig struct {
@@ -41,6 +42,22 @@ type RuntimeConfig struct {
 	BatchSize int    `yaml:"batch_size"`
 }
 
+type LoggingConfig struct {
+	Level            string            `yaml:"level"`
+	Encoding         string            `yaml:"encoding"`
+	OutputPaths      []string          `yaml:"output_paths"`
+	ErrorOutputPaths []string          `yaml:"error_output_paths"`
+	File             LoggingFileConfig `yaml:"file"`
+}
+
+type LoggingFileConfig struct {
+	Path       string `yaml:"path"`
+	MaxSizeMB  int    `yaml:"max_size_mb"`
+	MaxBackups int    `yaml:"max_backups"`
+	MaxAgeDays int    `yaml:"max_age_days"`
+	Compress   bool   `yaml:"compress"`
+}
+
 type Overrides struct {
 	ConfigPath         string
 	ClickHouseAddr     string
@@ -51,6 +68,16 @@ type Overrides struct {
 	TDXRoot            string
 	BatchSize          int
 	Timezone           string
+	LogLevel           string
+	LogEncoding        string
+	LogOutputPaths     string
+	LogErrorPaths      string
+	LogFilePath        string
+	LogFileMaxSizeMB   int
+	LogFileMaxBackups  int
+	LogFileMaxAgeDays  int
+	LogFileCompressSet bool
+	LogFileCompress    bool
 }
 
 func Default() Config {
@@ -67,6 +94,18 @@ func Default() Config {
 		Runtime: RuntimeConfig{
 			Timezone:  "Asia/Shanghai",
 			BatchSize: 10000,
+		},
+		Logging: LoggingConfig{
+			Level:            "info",
+			Encoding:         "console",
+			OutputPaths:      []string{"stderr"},
+			ErrorOutputPaths: []string{"stderr"},
+			File: LoggingFileConfig{
+				MaxSizeMB:  100,
+				MaxBackups: 7,
+				MaxAgeDays: 30,
+				Compress:   true,
+			},
 		},
 	}
 }
@@ -93,6 +132,9 @@ func Load(overrides Overrides) (Config, error) {
 	}
 	if cfg.ClickHouse.Databases.Market == "" || cfg.ClickHouse.Databases.Ops == "" {
 		return cfg, fmt.Errorf("clickhouse database names are required")
+	}
+	if err := validateLoggingConfig(cfg.Logging); err != nil {
+		return cfg, err
 	}
 	return cfg, nil
 }
@@ -131,6 +173,14 @@ func RegisterCommonFlags(fs *flag.FlagSet, overrides *Overrides) {
 	fs.StringVar(&overrides.TDXRoot, "root", "", "TDX root path")
 	fs.StringVar(&overrides.Timezone, "timezone", "", "runtime timezone")
 	fs.IntVar(&overrides.BatchSize, "batch-size", 0, "batch insert size")
+	fs.StringVar(&overrides.LogLevel, "log-level", "", "log level: debug, info, warn, error, dpanic, panic, or fatal")
+	fs.StringVar(&overrides.LogEncoding, "log-encoding", "", "log encoding: console or json")
+	fs.StringVar(&overrides.LogOutputPaths, "log-output-paths", "", "comma-separated log outputs: stdout, stderr, or file")
+	fs.StringVar(&overrides.LogErrorPaths, "log-error-output-paths", "", "comma-separated zap internal error outputs")
+	fs.StringVar(&overrides.LogFilePath, "log-file", "", "rotating log file path for file output")
+	fs.IntVar(&overrides.LogFileMaxSizeMB, "log-file-max-size-mb", 0, "rotating log file max size in MB")
+	fs.IntVar(&overrides.LogFileMaxBackups, "log-file-max-backups", 0, "rotating log file max backup count")
+	fs.IntVar(&overrides.LogFileMaxAgeDays, "log-file-max-age-days", 0, "rotating log file max age in days")
 }
 
 func applyEnv(cfg *Config) {
@@ -141,9 +191,34 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.ClickHouse.Password, "MARKETD_CLICKHOUSE_PASSWORD")
 	setString(&cfg.TDX.Root, "MARKETD_TDX_ROOT")
 	setString(&cfg.Runtime.Timezone, "MARKETD_TIMEZONE")
+	setString(&cfg.Logging.Level, "MARKETD_LOG_LEVEL")
+	setString(&cfg.Logging.Encoding, "MARKETD_LOG_ENCODING")
+	setString(&cfg.Logging.File.Path, "MARKETD_LOG_FILE")
+	setStringList(&cfg.Logging.OutputPaths, "MARKETD_LOG_OUTPUT_PATHS")
+	setStringList(&cfg.Logging.ErrorOutputPaths, "MARKETD_LOG_ERROR_OUTPUT_PATHS")
 	if value := os.Getenv("MARKETD_BATCH_SIZE"); value != "" {
 		if n, err := strconv.Atoi(value); err == nil {
 			cfg.Runtime.BatchSize = n
+		}
+	}
+	if value := os.Getenv("MARKETD_LOG_FILE_MAX_SIZE_MB"); value != "" {
+		if n, err := strconv.Atoi(value); err == nil {
+			cfg.Logging.File.MaxSizeMB = n
+		}
+	}
+	if value := os.Getenv("MARKETD_LOG_FILE_MAX_BACKUPS"); value != "" {
+		if n, err := strconv.Atoi(value); err == nil {
+			cfg.Logging.File.MaxBackups = n
+		}
+	}
+	if value := os.Getenv("MARKETD_LOG_FILE_MAX_AGE_DAYS"); value != "" {
+		if n, err := strconv.Atoi(value); err == nil {
+			cfg.Logging.File.MaxAgeDays = n
+		}
+	}
+	if value := os.Getenv("MARKETD_LOG_FILE_COMPRESS"); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			cfg.Logging.File.Compress = parsed
 		}
 	}
 }
@@ -173,10 +248,105 @@ func applyOverrides(cfg *Config, overrides Overrides) {
 	if overrides.BatchSize > 0 {
 		cfg.Runtime.BatchSize = overrides.BatchSize
 	}
+	if overrides.LogLevel != "" {
+		cfg.Logging.Level = overrides.LogLevel
+	}
+	if overrides.LogEncoding != "" {
+		cfg.Logging.Encoding = overrides.LogEncoding
+	}
+	if overrides.LogOutputPaths != "" {
+		cfg.Logging.OutputPaths = splitCSV(overrides.LogOutputPaths)
+	}
+	if overrides.LogErrorPaths != "" {
+		cfg.Logging.ErrorOutputPaths = splitCSV(overrides.LogErrorPaths)
+	}
+	if overrides.LogFilePath != "" {
+		cfg.Logging.File.Path = overrides.LogFilePath
+	}
+	if overrides.LogFileMaxSizeMB > 0 {
+		cfg.Logging.File.MaxSizeMB = overrides.LogFileMaxSizeMB
+	}
+	if overrides.LogFileMaxBackups > 0 {
+		cfg.Logging.File.MaxBackups = overrides.LogFileMaxBackups
+	}
+	if overrides.LogFileMaxAgeDays > 0 {
+		cfg.Logging.File.MaxAgeDays = overrides.LogFileMaxAgeDays
+	}
+	if overrides.LogFileCompressSet {
+		cfg.Logging.File.Compress = overrides.LogFileCompress
+	}
 }
 
 func setString(target *string, env string) {
 	if value := os.Getenv(env); value != "" {
 		*target = value
 	}
+}
+
+func setStringList(target *[]string, env string) {
+	if value := os.Getenv(env); value != "" {
+		*target = splitCSV(value)
+	}
+}
+
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func validateLoggingConfig(cfg LoggingConfig) error {
+	switch strings.ToLower(cfg.Level) {
+	case "debug", "info", "warn", "error", "dpanic", "panic", "fatal":
+	default:
+		return fmt.Errorf("logging.level must be one of debug, info, warn, error, dpanic, panic, or fatal")
+	}
+	switch strings.ToLower(cfg.Encoding) {
+	case "console", "json":
+	default:
+		return fmt.Errorf("logging.encoding must be console or json")
+	}
+	if len(cfg.OutputPaths) == 0 {
+		return fmt.Errorf("logging.output_paths must not be empty")
+	}
+	if len(cfg.ErrorOutputPaths) == 0 {
+		return fmt.Errorf("logging.error_output_paths must not be empty")
+	}
+	if err := validateLogOutputPaths("logging.output_paths", cfg.OutputPaths, cfg.File.Path); err != nil {
+		return err
+	}
+	if err := validateLogOutputPaths("logging.error_output_paths", cfg.ErrorOutputPaths, cfg.File.Path); err != nil {
+		return err
+	}
+	if cfg.File.MaxSizeMB <= 0 {
+		return fmt.Errorf("logging.file.max_size_mb must be positive")
+	}
+	if cfg.File.MaxBackups < 0 {
+		return fmt.Errorf("logging.file.max_backups must be non-negative")
+	}
+	if cfg.File.MaxAgeDays < 0 {
+		return fmt.Errorf("logging.file.max_age_days must be non-negative")
+	}
+	return nil
+}
+
+func validateLogOutputPaths(field string, paths []string, filePath string) error {
+	for _, path := range paths {
+		switch strings.ToLower(path) {
+		case "stdout", "stderr":
+		case "file":
+			if strings.TrimSpace(filePath) == "" {
+				return fmt.Errorf("%s includes file but logging.file.path is empty", field)
+			}
+		default:
+			return fmt.Errorf("%s contains unsupported output %q", field, path)
+		}
+	}
+	return nil
 }

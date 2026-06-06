@@ -14,12 +14,15 @@ import (
 	chstore "github.com/hoverwinter/infinity-marketd/internal/clickhouse"
 	"github.com/hoverwinter/infinity-marketd/internal/config"
 	"github.com/hoverwinter/infinity-marketd/internal/ingest"
+	"github.com/hoverwinter/infinity-marketd/internal/logging"
 	"github.com/hoverwinter/infinity-marketd/internal/tdx"
 )
 
 var fetchRealtimeQuotes = tdx.FetchRealtimeQuotes
 var probeHQServers = tdx.ProbeHQServers
 var fetchQuoteSweep = tdx.QuoteSweep
+var fetchExMarkets = tdx.FetchExMarkets
+var fetchExQuote = tdx.FetchExQuote
 
 func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -43,6 +46,10 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runQuoteProbe(ctx, args[1:], stdout, stderr)
 	case "quote-sweep":
 		return runQuoteSweep(ctx, args[1:], stdout, stderr)
+	case "exquote-markets":
+		return runExQuoteMarkets(ctx, args[1:], stdout, stderr)
+	case "exquote":
+		return runExQuote(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return 0
@@ -198,6 +205,57 @@ func runQuoteSweep(ctx context.Context, args []string, stdout io.Writer, stderr 
 	return 0
 }
 
+func runExQuoteMarkets(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	fs := newFlagSet("exquote-markets", stderr)
+	fs.Var(&servers, "server", "TDX ExHQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	markets, err := fetchExMarkets(ctx, exQuoteClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	encoded, err := json.MarshalIndent(markets, "", "  ")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintln(stdout, string(encoded))
+	return 0
+}
+
+func runExQuote(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var market int
+	var code string
+	fs := newFlagSet("exquote", stderr)
+	fs.IntVar(&market, "market", 0, "TDX ExHQ numeric market id")
+	fs.StringVar(&code, "code", "", "TDX ExHQ instrument code")
+	fs.Var(&servers, "server", "TDX ExHQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseExQuoteRequest(market, code)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	quote, err := fetchExQuote(ctx, req, exQuoteClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	encoded, err := json.MarshalIndent(quote, "", "  ")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintln(stdout, string(encoded))
+	return 0
+}
+
 func quoteClientOptions(servers []string, batchSize int, tradeDateText string) (tdx.QuoteClientOptions, error) {
 	opts := tdx.QuoteClientOptions{
 		Servers:   servers,
@@ -219,6 +277,10 @@ func quoteClientOptions(servers []string, batchSize int, tradeDateText string) (
 	return opts, nil
 }
 
+func exQuoteClientOptions(servers []string) tdx.ExQuoteClientOptions {
+	return tdx.ExQuoteClientOptions{Servers: servers}
+}
+
 func runBootstrap(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	var overrides config.Overrides
 	var dryRun bool
@@ -233,6 +295,11 @@ func runBootstrap(ctx context.Context, args []string, stdout io.Writer, stderr i
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
 	if dryRun {
 		ddl, err := chstore.BootstrapDDL(chstore.SchemaConfig{MarketDB: cfg.ClickHouse.Databases.Market, OpsDB: cfg.ClickHouse.Databases.Ops})
 		if err != nil {
@@ -270,6 +337,11 @@ func runStatus(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
 	store, err := chstore.Open(ctx, cfg.ClickHouse)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -312,6 +384,11 @@ func runImport(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
 	var store *chstore.Store
 	if !dryRun {
 		store, err = chstore.Open(ctx, cfg.ClickHouse)
@@ -492,6 +569,19 @@ func printBulkSummary(out io.Writer, summary bulkImportSummary) {
 	fmt.Fprintf(out, "quality_issues: %d\n", summary.QualityIssues)
 }
 
+func setupLogging(cfg config.Config, stderr io.Writer) (func(), bool) {
+	_, cleanup, err := logging.InitGlobal(cfg.Logging)
+	if err != nil {
+		fmt.Fprintf(stderr, "logging: %v\n", err)
+		return nil, false
+	}
+	return func() {
+		if err := cleanup(); err != nil {
+			fmt.Fprintf(stderr, "logging cleanup: %v\n", err)
+		}
+	}, true
+}
+
 func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -509,6 +599,8 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  quote")
 	fmt.Fprintln(out, "  quote-probe")
 	fmt.Fprintln(out, "  quote-sweep")
+	fmt.Fprintln(out, "  exquote-markets")
+	fmt.Fprintln(out, "  exquote")
 }
 
 func datasetFor(period tdx.Period) string {

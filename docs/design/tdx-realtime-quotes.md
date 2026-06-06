@@ -1,15 +1,15 @@
 # TDX 实时行情实现说明
 
-本文档说明 `marketd` 已实现的 TDX 标准行情能力，以及这些能力的实现原理。
+本文档说明 `marketd` 已实现的 TDX 标准行情和扩展行情能力，以及这些能力的实现原理。
 
 相关代码：
 
 - `internal/tdx/quote.go`：实时行情请求包、响应解析、价格和成交额解码。
 - `internal/tdx/quote_ops.go`：server 探测、候选 server 重试、批量会话复用、证券列表、扫盘 workflow。
-- `internal/tdx/exquote.go`：`exhq` 扩展行情的独立校验边界。
-- `internal/cli/cli.go`：`quote`、`quote-probe`、`quote-sweep` CLI。
+- `internal/tdx/exquote.go`：`exhq` 扩展行情 setup、市场列表、单合约 quote 请求和响应解析。
+- `internal/cli/cli.go`：`quote`、`quote-probe`、`quote-sweep`、`exquote-markets`、`exquote` CLI。
 
-该实现用于平替 pytdx `hq.get_security_quotes` 的标准行情路径，不依赖 Python、pytdx、mootdx、pandas，也不要求 ClickHouse 连接。
+该实现用于平替 pytdx `hq.get_security_quotes` 和 `exhq.get_instrument_quote` 的部分实时行情路径，不依赖 Python、pytdx、mootdx、pandas，也不要求 ClickHouse 连接。
 
 ## 已实现能力
 
@@ -203,6 +203,58 @@ go run ./cmd/marketd quote-sweep \
 | `decimal_point` | 小数位 |
 | `pre_close` | TDX 编码中的前收字段 |
 
+### 扩展行情 `exhq`
+
+`exhq` 是独立于标准 A 股 `hq` 的 TDX 扩展行情协议，常用于期货、期权、港股、外盘等扩展市场。它使用数字 market id 和 instrument code，不使用 `sh` / `sz` / `bj`。
+
+查询扩展市场列表：
+
+```bash
+go run ./cmd/marketd exquote-markets \
+  --server 61.152.107.141:7727
+```
+
+查询单个扩展品种 quote：
+
+```bash
+go run ./cmd/marketd exquote \
+  --market 47 \
+  --code IF1709 \
+  --server 61.152.107.141:7727
+```
+
+`exquote` 输出单个 JSON object，字段包括：
+
+| 字段 | 含义 |
+| --- | --- |
+| `market` | TDX 扩展市场 ID |
+| `code` | 扩展品种代码 |
+| `pre_close` | 昨收 |
+| `open` / `high` / `low` | 当日开高低 |
+| `price` | 当前价 |
+| `kaicang` | 开仓类字段 |
+| `zongliang` | 总量 |
+| `xianliang` | 现量 |
+| `neipan` / `waipan` | 内盘 / 外盘 |
+| `chicang` | 持仓类字段 |
+| `bids` / `asks` | 五档买卖盘 |
+
+当前 `exhq` 只实现：
+
+- market list；
+- single instrument quote；
+- 多 server candidate 顺序 fallback；
+- JSON CLI 输出。
+
+当前 `exhq` 不实现：
+
+- instrument count/list；
+- K 线；
+- 分时；
+- 分笔；
+- 历史接口；
+- ClickHouse 持久化。
+
 ### 时间字段语义
 
 TDX quote payload 只提供日内服务器时间，不提供完整日期。
@@ -257,9 +309,9 @@ go run ./cmd/marketd quote \
 
 `exhq`：
 
-- 当前只提供 `ParseExQuoteRequest` 作为独立校验边界。
-- 没有实现扩展行情 TCP client。
-- 后续应单独实现 `exhq` 的 setup、请求包、响应解析和市场映射。
+- 当前已实现扩展市场列表和单合约 quote。
+- 仍然独立于标准 A 股 `hq` client。
+- 不支持 `exhq` K 线、分时、分笔、历史和品种列表。
 - 不应和标准 A 股 `hq` client 混在同一个协议路径里。
 
 ## 实现原理
@@ -568,6 +620,52 @@ item_count * 29-byte record
 
 `QuoteSweep` 在未传入显式 symbol 时，会先调用证券列表发现，再进入批量 quote。
 
+### ExHQ 实现原理
+
+`OpenExQuoteSession` 完成：
+
+1. TCP connect。
+2. 设置 deadline。
+3. 发送一个 TDX 扩展行情 setup 包。
+4. 返回可复用的 `ExQuoteSession`。
+
+扩展市场列表请求包：
+
+```text
+01 02 48 69 00 01 02 00 02 00 f4 23
+```
+
+扩展市场列表响应：
+
+```text
+uint16 count
+count * 64-byte record
+```
+
+单合约 quote 请求包由固定 12 字节前缀加 10 字节 identity 组成：
+
+```text
+01 01 08 02 02 01 0c 00 0c 00 fa 23
+uint8 market
+char[9] code
+```
+
+单合约 quote 响应使用定长结构：
+
+```text
+uint8 market
+char[9] code
+byte[4] ignored
+float32 pre_close, open, high, low, price
+uint32 kaicang, ignored, zongliang, xianliang, ignored, neipan, waipan, ignored, chicang
+float32 bid1..bid5
+uint32 bid_vol1..bid_vol5
+float32 ask1..ask5
+uint32 ask_vol1..ask_vol5
+```
+
+`exhq` quote 价格字段是普通 `float32`，不同于标准 `hq` A 股 quote 的变长整数差分编码。
+
 ### CLI 错误处理
 
 参数错误返回 exit code `2`：
@@ -635,6 +733,22 @@ go run ./cmd/marketd quote-sweep \
   --server 180.153.18.170:7709
 ```
 
+扩展市场列表：
+
+```bash
+go run ./cmd/marketd exquote-markets \
+  --server 61.152.107.141:7727
+```
+
+扩展品种 quote：
+
+```bash
+go run ./cmd/marketd exquote \
+  --market 47 \
+  --code IF1709 \
+  --server 61.152.107.141:7727
+```
+
 负向验证：
 
 ```bash
@@ -646,7 +760,8 @@ go run ./cmd/marketd quote --symbol bj:920001
 ## 当前限制
 
 - 不支持 `bj` 实时行情。
-- 不支持 `exhq` 扩展行情 TCP client。
+- `exhq` 只支持 market list 和 single instrument quote。
+- `exhq` 市场名称目前没有做 GBK 解码，非 UTF-8 名称会置空。
 - 不做长期心跳保活。
 - 不做全局连接池。
 - 不做实时流式订阅。
@@ -657,7 +772,7 @@ go run ./cmd/marketd quote --symbol bj:920001
 ## 后续方向
 
 - 验证北交所实时行情的真实 TDX market mapping 和响应样本。
-- 单独实现 `exhq` 扩展行情协议。
+- 补齐 `exhq` instrument list、K 线、分时、分笔和历史接口。
 - 为证券列表名称增加 GBK 解码。
 - 如果需要长期运行的行情服务，再引入连接池、心跳和定期重连。
 - 如果需要持久化 quote snapshot，另起 OpenSpec change 定义 ClickHouse schema、保留策略和去重语义。

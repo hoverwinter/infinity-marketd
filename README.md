@@ -25,6 +25,17 @@ go run ./cmd/marketd import-tdx-1m --root ~/tdx-data --code 600519 --dry-run
 go run ./cmd/marketd import-tdx-5m --root ~/tdx-data --code 600519 --dry-run
 ```
 
+On-demand TDX quote commands:
+
+```bash
+go run ./cmd/marketd quote --symbol sh:600519 --server 180.153.18.170:7709
+go run ./cmd/marketd quote-probe --server 180.153.18.170:7709
+go run ./cmd/marketd quote-sweep --market sh --limit 10 --server 180.153.18.170:7709
+
+go run ./cmd/marketd exquote-markets --server 61.152.107.141:7727
+go run ./cmd/marketd exquote --market 47 --code IF1709 --server 61.152.107.141:7727
+```
+
 Query service and CLI commands:
 
 ```bash
@@ -75,5 +86,5 @@ Use `examples/config.example.yaml` as a starting point. Do not commit real crede
 
 ```bash
 go test ./...
-openspec validate build-tdx-clickhouse-mvp
+openspec validate --all
 ```

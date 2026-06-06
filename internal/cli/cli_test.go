@@ -190,11 +190,105 @@ func TestQuoteSweepCommandUsesStubbedWorkflow(t *testing.T) {
 	}
 }
 
+func TestExQuoteMarketsCommandEmitsJSON(t *testing.T) {
+	original := fetchExMarkets
+	defer func() { fetchExMarkets = original }()
+
+	var gotServers []string
+	fetchExMarkets = func(ctx context.Context, opts tdx.ExQuoteClientOptions) ([]tdx.ExMarket, error) {
+		gotServers = append([]string(nil), opts.Servers...)
+		return []tdx.ExMarket{{Market: 47, Category: 3, Name: "Futures", ShortName: "CZ"}}, nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"exquote-markets", "--server", "127.0.0.1:7727,127.0.0.2:7727"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if strings.Join(gotServers, ",") != "127.0.0.1:7727,127.0.0.2:7727" {
+		t.Fatalf("servers = %#v", gotServers)
+	}
+	var decoded []tdx.ExMarket
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if len(decoded) != 1 || decoded[0].Market != 47 {
+		t.Fatalf("decoded = %#v", decoded)
+	}
+}
+
+func TestExQuoteCommandEmitsJSONAndUsesServerOverride(t *testing.T) {
+	original := fetchExQuote
+	defer func() { fetchExQuote = original }()
+
+	var gotRequest tdx.ExQuoteRequest
+	var gotServers []string
+	fetchExQuote = func(ctx context.Context, req tdx.ExQuoteRequest, opts tdx.ExQuoteClientOptions) (tdx.ExQuote, error) {
+		gotRequest = req
+		gotServers = append([]string(nil), opts.Servers...)
+		return tdx.ExQuote{
+			Market:    req.Market,
+			Code:      req.Code,
+			PreClose:  3718.2,
+			Open:      3717.2,
+			High:      3724,
+			Low:       3696.6,
+			Price:     3703,
+			KaiCang:   2043,
+			ZongLiang: 1728,
+			XianLiang: 3,
+			NeiPan:    869,
+			WaiPan:    859,
+			ChiCang:   13340,
+			Bids:      []tdx.QuoteLevel{{Price: 3702.8, Volume: 1}},
+			Asks:      []tdx.QuoteLevel{{Price: 3704.4, Volume: 1}},
+		}, nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"exquote", "--market", "47", "--code", "IF1709", "--server", "127.0.0.1:7727"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if gotRequest != (tdx.ExQuoteRequest{Market: 47, Code: "IF1709"}) {
+		t.Fatalf("request = %#v", gotRequest)
+	}
+	if strings.Join(gotServers, ",") != "127.0.0.1:7727" {
+		t.Fatalf("servers = %#v", gotServers)
+	}
+	var decoded tdx.ExQuote
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if decoded.Market != 47 || decoded.Code != "IF1709" || decoded.Price != 3703 {
+		t.Fatalf("decoded = %#v", decoded)
+	}
+}
+
 func TestQuoteCommandValidatesArguments(t *testing.T) {
 	tests := [][]string{
 		{"quote"},
 		{"quote", "--symbol", "bj:920001"},
 		{"quote", "--symbol", "bad"},
+	}
+	for _, args := range tests {
+		var out bytes.Buffer
+		var errOut bytes.Buffer
+		code := Run(context.Background(), args, &out, &errOut)
+		if code != 2 {
+			t.Fatalf("%v exit %d stderr=%s stdout=%s", args, code, errOut.String(), out.String())
+		}
+	}
+}
+
+func TestExQuoteCommandValidatesArguments(t *testing.T) {
+	tests := [][]string{
+		{"exquote"},
+		{"exquote", "--market", "0", "--code", "IF1709"},
+		{"exquote", "--market", "47"},
+		{"exquote", "--market", "47", "--code", "IF 1709"},
 	}
 	for _, args := range tests {
 		var out bytes.Buffer

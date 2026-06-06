@@ -5,5 +5,7 @@ TongDaXin (TDX) binary parsing — the source-of-truth decoders.
 - `parse.go` — `ParseDayBytes` / `ParseMinuteBytes` over 32-byte records. `.day` prices are integer cents (÷100); `.lc1`/`.lc5` use float32; `.1`/`.5` use integer cents. Returns `Daily/MinuteParseResult` plus `ParseIssue`s for malformed/duplicate rows.
 - `market.go` — `InferMarketFromCode`, `ParseMarketSymbol` (market from `vipdoc/sh|sz|bj/...` path or code prefix).
 - `discovery.go` — `DiscoverFile` / `DiscoverFiles` by `Period`, market, code.
+- `quote.go` / `quote_ops.go` — TDX standard `hq` realtime quote packets, decoders, server probing, batch retry, security list, and quote sweep.
+- `exquote.go` — TDX extended `exhq` market list and single instrument quote packets/decoders.
 
-All timestamps use `Asia/Shanghai`. Format reference: `docs/tdx-data/`. Pure parsing — no ClickHouse or I/O orchestration here.
+All timestamps use `Asia/Shanghai`. Format reference: `docs/tdx-data/`. This package owns TDX parsing and TDX network protocol clients; it must not open ClickHouse or orchestrate imports.
