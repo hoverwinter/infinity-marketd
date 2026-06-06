@@ -1,4 +1,4 @@
-CONFIG ?= examples/config.example.yaml
+CONFIG ?= configs/config.yaml
 LISTEN ?= 127.0.0.1:8808
 URL ?= http://$(LISTEN)
 
