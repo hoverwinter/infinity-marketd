@@ -22,6 +22,18 @@ import (
 var fetchRealtimeQuotes = tdx.FetchRealtimeQuotes
 var probeHQServers = tdx.ProbeHQServers
 var fetchQuoteSweep = tdx.QuoteSweep
+var fetchHQSecurityBars = tdx.FetchHQSecurityBars
+var fetchHQIndexBars = tdx.FetchHQIndexBars
+var fetchHQMinuteTime = tdx.FetchHQMinuteTime
+var fetchHQHistoryMinuteTime = tdx.FetchHQHistoryMinuteTime
+var fetchHQTransactions = tdx.FetchHQTransactions
+var fetchHQHistoryTransactions = tdx.FetchHQHistoryTransactions
+var fetchHQCompanyInfoCategories = tdx.FetchHQCompanyInfoCategories
+var fetchHQCompanyInfoContent = tdx.FetchHQCompanyInfoContent
+var fetchHQXDXRInfo = tdx.FetchHQXDXRInfo
+var fetchHQFinanceInfo = tdx.FetchHQFinanceInfo
+var fetchHQBlockMeta = tdx.FetchHQBlockMeta
+var fetchHQBlockMembers = tdx.FetchHQBlockMembers
 var fetchExMarkets = tdx.FetchExMarkets
 var fetchExQuote = tdx.FetchExQuote
 var fetchExInstrumentCount = tdx.FetchExInstrumentCount
@@ -55,6 +67,30 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runQuoteProbe(ctx, args[1:], stdout, stderr)
 	case "quote-sweep":
 		return runQuoteSweep(ctx, args[1:], stdout, stderr)
+	case "hq-bars":
+		return runHQBars(ctx, args[1:], stdout, stderr, false)
+	case "hq-index-bars":
+		return runHQBars(ctx, args[1:], stdout, stderr, true)
+	case "hq-minute":
+		return runHQMinute(ctx, args[1:], stdout, stderr)
+	case "hq-history-minute":
+		return runHQHistoryMinute(ctx, args[1:], stdout, stderr)
+	case "hq-transactions":
+		return runHQTransactions(ctx, args[1:], stdout, stderr)
+	case "hq-history-transactions":
+		return runHQHistoryTransactions(ctx, args[1:], stdout, stderr)
+	case "hq-company-categories":
+		return runHQCompanyCategories(ctx, args[1:], stdout, stderr)
+	case "hq-company-content":
+		return runHQCompanyContent(ctx, args[1:], stdout, stderr)
+	case "hq-xdxr":
+		return runHQXDXR(ctx, args[1:], stdout, stderr)
+	case "hq-finance":
+		return runHQFinance(ctx, args[1:], stdout, stderr)
+	case "hq-block-meta":
+		return runHQBlockMeta(ctx, args[1:], stdout, stderr)
+	case "hq-block":
+		return runHQBlock(ctx, args[1:], stdout, stderr)
 	case "exquote-markets":
 		return runExQuoteMarkets(ctx, args[1:], stdout, stderr)
 	case "exquote-count":
@@ -228,6 +264,311 @@ func runQuoteSweep(ctx context.Context, args []string, stdout io.Writer, stderr 
 	}
 	fmt.Fprintln(stdout, string(encoded))
 	return 0
+}
+
+func runHQBars(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, index bool) int {
+	var servers listFlags
+	var market string
+	var symbol string
+	var category int
+	var start int
+	var count int
+	name := "hq-bars"
+	if index {
+		name = "hq-index-bars"
+	}
+	fs := newFlagSet(name, stderr)
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	fs.IntVar(&category, "category", tdx.HQKLineDayAlt, "K-line category: 0=5m, 1=15m, 2=30m, 3=1h, 4=day, 5=week, 6=month, 7=1m, 8=1m, 9=day, 10=quarter, 11=year")
+	fs.IntVar(&start, "start", 0, "K-line start offset")
+	fs.IntVar(&count, "count", tdx.DefaultHQKLineCount, "K-line count, max 800")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseHQBarsRequest(category, market, symbol, start, count)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	var bars []tdx.HQBar
+	if index {
+		bars, err = fetchHQIndexBars(ctx, req, hqClientOptions([]string(servers)))
+	} else {
+		bars, err = fetchHQSecurityBars(ctx, req, hqClientOptions([]string(servers)))
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, bars)
+}
+
+func runHQMinute(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var market string
+	var symbol string
+	fs := newFlagSet("hq-minute", stderr)
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseHQMinuteRequest(market, symbol)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	points, err := fetchHQMinuteTime(ctx, req, hqClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, points)
+}
+
+func runHQHistoryMinute(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var market string
+	var symbol string
+	var dateText string
+	fs := newFlagSet("hq-history-minute", stderr)
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	fs.StringVar(&dateText, "date", "", "history date YYYYMMDD")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseHQMinuteRequest(market, symbol)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	date, err := parseYYYYMMDDFlag("date", dateText)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	points, err := fetchHQHistoryMinuteTime(ctx, req, date, hqClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, points)
+}
+
+func runHQTransactions(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var market string
+	var symbol string
+	var start int
+	var count int
+	fs := newFlagSet("hq-transactions", stderr)
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	fs.IntVar(&start, "start", 0, "transaction start offset")
+	fs.IntVar(&count, "count", tdx.DefaultHQTransactionCount, "transaction count, max 1800")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseHQTransactionRequest(market, symbol, start, count)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	transactions, err := fetchHQTransactions(ctx, req, start, count, hqClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, transactions)
+}
+
+func runHQHistoryTransactions(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var market string
+	var symbol string
+	var dateText string
+	var start int
+	var count int
+	fs := newFlagSet("hq-history-transactions", stderr)
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	fs.StringVar(&dateText, "date", "", "history date YYYYMMDD")
+	fs.IntVar(&start, "start", 0, "transaction start offset")
+	fs.IntVar(&count, "count", tdx.DefaultHQTransactionCount, "transaction count, max 1800")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseHQTransactionRequest(market, symbol, start, count)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	date, err := parseYYYYMMDDFlag("date", dateText)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	transactions, err := fetchHQHistoryTransactions(ctx, req, date, start, count, hqClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, transactions)
+}
+
+func runHQCompanyCategories(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var market string
+	var symbol string
+	fs := newFlagSet("hq-company-categories", stderr)
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseHQMinuteRequest(market, symbol)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	categories, err := fetchHQCompanyInfoCategories(ctx, req, hqClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, categories)
+}
+
+func runHQCompanyContent(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var market string
+	var symbol string
+	var filename string
+	var start uint
+	var length uint
+	fs := newFlagSet("hq-company-content", stderr)
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	fs.StringVar(&filename, "filename", "", "company info filename")
+	fs.UintVar(&start, "start", 0, "content start offset")
+	fs.UintVar(&length, "length", 0, "content length")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseHQMinuteRequest(market, symbol)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if length == 0 || start > uint(^uint32(0)) || length > uint(^uint32(0)) {
+		fmt.Fprintln(stderr, "--length must be positive and offsets must fit uint32")
+		return 2
+	}
+	content, err := fetchHQCompanyInfoContent(ctx, req, filename, uint32(start), uint32(length), hqClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, content)
+}
+
+func runHQXDXR(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var market string
+	var symbol string
+	fs := newFlagSet("hq-xdxr", stderr)
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseHQMinuteRequest(market, symbol)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	rows, err := fetchHQXDXRInfo(ctx, req, hqClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, rows)
+}
+
+func runHQFinance(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var market string
+	var symbol string
+	fs := newFlagSet("hq-finance", stderr)
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	req, err := tdx.ParseHQMinuteRequest(market, symbol)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	info, err := fetchHQFinanceInfo(ctx, req, hqClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, info)
+}
+
+func runHQBlockMeta(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var file string
+	fs := newFlagSet("hq-block-meta", stderr)
+	fs.StringVar(&file, "file", "", "block file, such as block.dat, block_zs.dat, block_fg.dat, block_gn.dat")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(file) == "" {
+		fmt.Fprintln(stderr, "--file is required")
+		return 2
+	}
+	meta, err := fetchHQBlockMeta(ctx, file, hqClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, meta)
+}
+
+func runHQBlock(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var file string
+	fs := newFlagSet("hq-block", stderr)
+	fs.StringVar(&file, "file", "", "block file, such as block.dat, block_zs.dat, block_fg.dat, block_gn.dat")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(file) == "" {
+		fmt.Fprintln(stderr, "--file is required")
+		return 2
+	}
+	members, err := fetchHQBlockMembers(ctx, file, hqClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, members)
 }
 
 func runExQuoteMarkets(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
@@ -540,6 +881,10 @@ func quoteClientOptions(servers []string, batchSize int, tradeDateText string) (
 
 func exQuoteClientOptions(servers []string) tdx.ExQuoteClientOptions {
 	return tdx.ExQuoteClientOptions{Servers: servers}
+}
+
+func hqClientOptions(servers []string) tdx.QuoteClientOptions {
+	return tdx.QuoteClientOptions{Servers: servers}
 }
 
 func parseYYYYMMDDFlag(name, value string) (int, error) {
@@ -888,6 +1233,18 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  quote")
 	fmt.Fprintln(out, "  quote-probe")
 	fmt.Fprintln(out, "  quote-sweep")
+	fmt.Fprintln(out, "  hq-bars")
+	fmt.Fprintln(out, "  hq-index-bars")
+	fmt.Fprintln(out, "  hq-minute")
+	fmt.Fprintln(out, "  hq-history-minute")
+	fmt.Fprintln(out, "  hq-transactions")
+	fmt.Fprintln(out, "  hq-history-transactions")
+	fmt.Fprintln(out, "  hq-company-categories")
+	fmt.Fprintln(out, "  hq-company-content")
+	fmt.Fprintln(out, "  hq-xdxr")
+	fmt.Fprintln(out, "  hq-finance")
+	fmt.Fprintln(out, "  hq-block-meta")
+	fmt.Fprintln(out, "  hq-block")
 	fmt.Fprintln(out, "  exquote-markets")
 	fmt.Fprintln(out, "  exquote-count")
 	fmt.Fprintln(out, "  exquote-instruments")

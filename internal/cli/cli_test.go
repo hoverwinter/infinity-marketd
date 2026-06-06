@@ -233,6 +233,133 @@ func TestQuoteSweepCommandAcceptsExplicitBeijingSymbols(t *testing.T) {
 	}
 }
 
+func TestHQReadCommandsUseStubbedWorkflows(t *testing.T) {
+	origSecurityBars := fetchHQSecurityBars
+	origIndexBars := fetchHQIndexBars
+	origMinute := fetchHQMinuteTime
+	origHistoryMinute := fetchHQHistoryMinuteTime
+	origTransactions := fetchHQTransactions
+	origHistoryTransactions := fetchHQHistoryTransactions
+	origCategories := fetchHQCompanyInfoCategories
+	origContent := fetchHQCompanyInfoContent
+	origXDXR := fetchHQXDXRInfo
+	origFinance := fetchHQFinanceInfo
+	origBlockMeta := fetchHQBlockMeta
+	origBlock := fetchHQBlockMembers
+	defer func() {
+		fetchHQSecurityBars = origSecurityBars
+		fetchHQIndexBars = origIndexBars
+		fetchHQMinuteTime = origMinute
+		fetchHQHistoryMinuteTime = origHistoryMinute
+		fetchHQTransactions = origTransactions
+		fetchHQHistoryTransactions = origHistoryTransactions
+		fetchHQCompanyInfoCategories = origCategories
+		fetchHQCompanyInfoContent = origContent
+		fetchHQXDXRInfo = origXDXR
+		fetchHQFinanceInfo = origFinance
+		fetchHQBlockMeta = origBlockMeta
+		fetchHQBlockMembers = origBlock
+	}()
+
+	var seenServers []string
+	captureServers := func(opts tdx.QuoteClientOptions) {
+		seenServers = append([]string(nil), opts.Servers...)
+	}
+	fetchHQSecurityBars = func(ctx context.Context, req tdx.HQBarsRequest, opts tdx.QuoteClientOptions) ([]tdx.HQBar, error) {
+		captureServers(opts)
+		if req.Market != "sh" || req.Symbol != "600519" || req.Count != 2 {
+			t.Fatalf("security bars req = %#v", req)
+		}
+		return []tdx.HQBar{{Market: req.Market, Symbol: req.Symbol, Close: 1}}, nil
+	}
+	fetchHQIndexBars = func(ctx context.Context, req tdx.HQBarsRequest, opts tdx.QuoteClientOptions) ([]tdx.HQBar, error) {
+		captureServers(opts)
+		return []tdx.HQBar{{Market: req.Market, Symbol: req.Symbol, UpCount: 1}}, nil
+	}
+	fetchHQMinuteTime = func(ctx context.Context, req tdx.HQMinuteRequest, opts tdx.QuoteClientOptions) ([]tdx.HQMinutePoint, error) {
+		captureServers(opts)
+		return []tdx.HQMinutePoint{{Market: req.Market, Symbol: req.Symbol, Time: "09:30", Price: 1}}, nil
+	}
+	fetchHQHistoryMinuteTime = func(ctx context.Context, req tdx.HQMinuteRequest, date int, opts tdx.QuoteClientOptions) ([]tdx.HQMinutePoint, error) {
+		captureServers(opts)
+		if date != 20260605 {
+			t.Fatalf("history minute date = %d", date)
+		}
+		return []tdx.HQMinutePoint{}, nil
+	}
+	fetchHQTransactions = func(ctx context.Context, req tdx.HQMinuteRequest, start, count int, opts tdx.QuoteClientOptions) ([]tdx.HQTransaction, error) {
+		captureServers(opts)
+		return []tdx.HQTransaction{{Market: req.Market, Symbol: req.Symbol, Price: 1}}, nil
+	}
+	fetchHQHistoryTransactions = func(ctx context.Context, req tdx.HQMinuteRequest, date, start, count int, opts tdx.QuoteClientOptions) ([]tdx.HQTransaction, error) {
+		captureServers(opts)
+		if date != 20260605 {
+			t.Fatalf("history transaction date = %d", date)
+		}
+		return []tdx.HQTransaction{{Date: "2026-06-05"}}, nil
+	}
+	fetchHQCompanyInfoCategories = func(ctx context.Context, req tdx.HQMinuteRequest, opts tdx.QuoteClientOptions) ([]tdx.HQCompanyInfoCategory, error) {
+		captureServers(opts)
+		return []tdx.HQCompanyInfoCategory{{Market: req.Market, Symbol: req.Symbol, Name: "notice"}}, nil
+	}
+	fetchHQCompanyInfoContent = func(ctx context.Context, req tdx.HQMinuteRequest, filename string, start, length uint32, opts tdx.QuoteClientOptions) (tdx.HQCompanyInfoContent, error) {
+		captureServers(opts)
+		if filename != "600519.txt" || start != 1 || length != 2 {
+			t.Fatalf("content args filename=%q start=%d length=%d", filename, start, length)
+		}
+		return tdx.HQCompanyInfoContent{Market: req.Market, Symbol: req.Symbol, Filename: filename, Content: "hello"}, nil
+	}
+	fetchHQXDXRInfo = func(ctx context.Context, req tdx.HQMinuteRequest, opts tdx.QuoteClientOptions) ([]tdx.HQXDXRInfo, error) {
+		captureServers(opts)
+		return []tdx.HQXDXRInfo{{Market: req.Market, Symbol: req.Symbol, Category: 1, Name: "除权除息"}}, nil
+	}
+	fetchHQFinanceInfo = func(ctx context.Context, req tdx.HQMinuteRequest, opts tdx.QuoteClientOptions) (tdx.HQFinanceInfo, error) {
+		captureServers(opts)
+		return tdx.HQFinanceInfo{Market: req.Market, Symbol: req.Symbol, IPODate: 20010827}, nil
+	}
+	fetchHQBlockMeta = func(ctx context.Context, file string, opts tdx.QuoteClientOptions) (tdx.HQBlockMeta, error) {
+		captureServers(opts)
+		if file != "block.dat" {
+			t.Fatalf("file = %q", file)
+		}
+		return tdx.HQBlockMeta{File: file, Size: 10}, nil
+	}
+	fetchHQBlockMembers = func(ctx context.Context, file string, opts tdx.QuoteClientOptions) ([]tdx.HQBlockMember, error) {
+		captureServers(opts)
+		return []tdx.HQBlockMember{{BlockName: "A", Code: "600519", Market: "sh", Symbol: "600519"}}, nil
+	}
+
+	commands := [][]string{
+		{"hq-bars", "--market", "sh", "--symbol", "600519", "--count", "2", "--server", "127.0.0.1:7709"},
+		{"hq-index-bars", "--market", "sh", "--symbol", "000001", "--server", "127.0.0.1:7709"},
+		{"hq-minute", "--market", "sh", "--symbol", "600519", "--server", "127.0.0.1:7709"},
+		{"hq-history-minute", "--market", "sh", "--symbol", "600519", "--date", "20260605", "--server", "127.0.0.1:7709"},
+		{"hq-transactions", "--market", "sh", "--symbol", "600519", "--count", "10", "--server", "127.0.0.1:7709"},
+		{"hq-history-transactions", "--market", "sh", "--symbol", "600519", "--date", "20260605", "--count", "10", "--server", "127.0.0.1:7709"},
+		{"hq-company-categories", "--market", "sh", "--symbol", "600519", "--server", "127.0.0.1:7709"},
+		{"hq-company-content", "--market", "sh", "--symbol", "600519", "--filename", "600519.txt", "--start", "1", "--length", "2", "--server", "127.0.0.1:7709"},
+		{"hq-xdxr", "--market", "sh", "--symbol", "600519", "--server", "127.0.0.1:7709"},
+		{"hq-finance", "--market", "sh", "--symbol", "600519", "--server", "127.0.0.1:7709"},
+		{"hq-block-meta", "--file", "block.dat", "--server", "127.0.0.1:7709"},
+		{"hq-block", "--file", "block.dat", "--server", "127.0.0.1:7709"},
+	}
+	for _, args := range commands {
+		var out bytes.Buffer
+		var errOut bytes.Buffer
+		code := Run(context.Background(), args, &out, &errOut)
+		if code != 0 {
+			t.Fatalf("%v exit %d stderr=%s stdout=%s", args, code, errOut.String(), out.String())
+		}
+		if strings.Join(seenServers, ",") != "127.0.0.1:7709" {
+			t.Fatalf("%v servers = %#v", args, seenServers)
+		}
+		var decoded any
+		if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+			t.Fatalf("%v invalid json: %v\n%s", args, err, out.String())
+		}
+	}
+}
+
 func TestExQuoteMarketsCommandEmitsJSON(t *testing.T) {
 	original := fetchExMarkets
 	defer func() { fetchExMarkets = original }()

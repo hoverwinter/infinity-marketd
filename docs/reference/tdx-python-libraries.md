@@ -131,7 +131,14 @@ Current coverage:
 | five-level depth | Implemented |
 | server probe / fallback | Implemented through `quote-probe` and multi-server quote retry |
 | heartbeat / long-lived reconnect | Not implemented |
-| `bj` realtime quotes | Not implemented |
+| `bj` realtime quotes | Implemented for verified quote requests |
+| `get_security_bars` / `get_index_bars` | Implemented as `marketd hq-bars` / `marketd hq-index-bars` |
+| `get_minute_time_data` / `get_history_minute_time_data` | Implemented as `marketd hq-minute` / `marketd hq-history-minute` |
+| `get_transaction_data` / `get_history_transaction_data` | Implemented as `marketd hq-transactions` / `marketd hq-history-transactions` |
+| `get_company_info_category` / `get_company_info_content` | Implemented as `marketd hq-company-categories` / `marketd hq-company-content` |
+| `get_xdxr_info` | Implemented as `marketd hq-xdxr` |
+| `get_finance_info` | Implemented as `marketd hq-finance` |
+| `get_block_info_meta` / `get_block_info` | Implemented as `marketd hq-block-meta` / `marketd hq-block` |
 
 ### `pytdx.exhq` Extended行情
 
@@ -307,12 +314,13 @@ Frequency aliases and adjustment support are a major convenience layer:
 | --- | --- |
 | standard A-share realtime quote | Implemented through `marketd quote` |
 | server bestip selection | Partially implemented through `marketd quote-probe` |
-| online K-line | Not implemented |
-| online minute/time sharing | Not implemented |
-| online transaction records | Not implemented |
+| online K-line | Implemented through `marketd hq-bars` / `hq-index-bars` |
+| online minute/time sharing | Implemented through `marketd hq-minute` / `hq-history-minute` |
+| online transaction records | Implemented through `marketd hq-transactions` / `hq-history-transactions` |
 | qfq/hfq adjustment | Not implemented |
-| F10/company/finance online data | Not implemented |
-| extended market quote | Partially implemented through `marketd exquote` |
+| F10/company/finance online data | Implemented through `marketd hq-company-*`, `hq-xdxr`, and `hq-finance` |
+| block online data | Implemented through `marketd hq-block-meta` / `hq-block` |
+| extended market quote | Implemented through `marketd exquote` and `exquote-*` read commands |
 
 ### `mootdx.reader`
 
@@ -408,8 +416,9 @@ CLI output commonly supports CSV, JSON, Excel, HDF5, depending on command and op
 - Local `.lc1` / `.1` 1-minute bars.
 - Local `.lc5` / `.5` 5-minute bars.
 - ClickHouse bootstrap and imports for canonical OHLCV facts.
-- Standard A-share realtime quote snapshots for `sh` / `sz`.
-- Extended market list and single instrument quote through TDX `exhq`.
+- Standard A-share realtime quote snapshots for `sh` / `sz` / verified `bj`.
+- Standard HQ online K-line, minute-time, transaction, company/F10, xdxr, finance, and block reads.
+- Extended market list, instrument catalog, single instrument quote, K-line, minute-time, transaction, and history reads through TDX `exhq`.
 
 ### High-value next candidates
 
@@ -417,7 +426,6 @@ CLI output commonly supports CSV, JSON, Excel, HDF5, depending on command and op
 | --- | --- | --- |
 | TDX server bestip selection | `mootdx bestip` | Improves realtime quote reliability |
 | Online security list | `pytdx.hq.get_security_list` | Useful for full-market realtime sweeps |
-| Online K-line fetch | `pytdx.hq.get_security_bars`, `mootdx.bars` | Complements local-file imports |
 | 分时线 local/import | `mootdx.reader.fzline` | Distinct from OHLCV minute bars |
 | Block/custom block reading | `pytdx.reader`, `mootdx.reader` | Useful for sector/index membership workflows |
 | Financial file download/parse | `pytdx.crawler`, `mootdx.affair` | Builds fundamental data plane |
