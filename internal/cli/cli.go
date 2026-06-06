@@ -2,18 +2,24 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	chstore "github.com/hoverwinter/infinity-marketd/internal/clickhouse"
 	"github.com/hoverwinter/infinity-marketd/internal/config"
 	"github.com/hoverwinter/infinity-marketd/internal/ingest"
 	"github.com/hoverwinter/infinity-marketd/internal/tdx"
 )
+
+var fetchRealtimeQuotes = tdx.FetchRealtimeQuotes
+var probeHQServers = tdx.ProbeHQServers
+var fetchQuoteSweep = tdx.QuoteSweep
 
 func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -31,6 +37,12 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runImport(ctx, args[1:], stdout, stderr, tdx.Period1m)
 	case "import-tdx-5m":
 		return runImport(ctx, args[1:], stdout, stderr, tdx.Period5m)
+	case "quote":
+		return runQuote(ctx, args[1:], stdout, stderr)
+	case "quote-probe":
+		return runQuoteProbe(ctx, args[1:], stdout, stderr)
+	case "quote-sweep":
+		return runQuoteSweep(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return 0
@@ -39,6 +51,172 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		printUsage(stderr)
 		return 2
 	}
+}
+
+type symbolFlags []string
+
+func (s *symbolFlags) String() string {
+	return strings.Join(*s, ",")
+}
+
+func (s *symbolFlags) Set(value string) error {
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			*s = append(*s, part)
+		}
+	}
+	return nil
+}
+
+type listFlags []string
+
+func (s *listFlags) String() string {
+	return strings.Join(*s, ",")
+}
+
+func (s *listFlags) Set(value string) error {
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			*s = append(*s, part)
+		}
+	}
+	return nil
+}
+
+func runQuote(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var symbols symbolFlags
+	var servers listFlags
+	var batchSize int
+	var tradeDateText string
+	fs := newFlagSet("quote", stderr)
+	fs.Var(&symbols, "symbol", "symbol to quote; repeat or comma-separate, accepts code or market:code")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	fs.IntVar(&batchSize, "batch-size", 0, "quote request batch size")
+	fs.StringVar(&tradeDateText, "trade-date", "", "explicit trade date YYYY-MM-DD for quote_time")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if len(symbols) == 0 {
+		fmt.Fprintln(stderr, "at least one --symbol is required")
+		return 2
+	}
+	requests := make([]tdx.QuoteRequest, 0, len(symbols))
+	for _, symbol := range symbols {
+		req, err := tdx.ParseQuoteRequest(symbol)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		requests = append(requests, req)
+	}
+	clientOpts, err := quoteClientOptions([]string(servers), batchSize, tradeDateText)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	quotes, err := fetchRealtimeQuotes(ctx, requests, clientOpts)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	encoded, err := json.MarshalIndent(quotes, "", "  ")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintln(stdout, string(encoded))
+	return 0
+}
+
+func runQuoteProbe(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	fs := newFlagSet("quote-probe", stderr)
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	results := probeHQServers(ctx, []string(servers), tdx.QuoteClientOptions{})
+	tdx.SortProbeResults(results)
+	encoded, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintln(stdout, string(encoded))
+	return 0
+}
+
+func runQuoteSweep(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var symbols symbolFlags
+	var servers listFlags
+	var markets listFlags
+	var batchSize int
+	var limit int
+	var tradeDateText string
+	fs := newFlagSet("quote-sweep", stderr)
+	fs.Var(&symbols, "symbol", "symbol to quote; repeat or comma-separate, accepts code or market:code")
+	fs.Var(&markets, "market", "market to discover when no symbols are provided; repeat or comma-separate")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	fs.IntVar(&batchSize, "batch-size", 0, "quote request batch size")
+	fs.IntVar(&limit, "limit", 0, "maximum symbols to quote")
+	fs.StringVar(&tradeDateText, "trade-date", "", "explicit trade date YYYY-MM-DD for quote_time")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	requests := make([]tdx.QuoteRequest, 0, len(symbols))
+	for _, symbol := range symbols {
+		req, err := tdx.ParseQuoteRequest(symbol)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		requests = append(requests, req)
+	}
+	clientOpts, err := quoteClientOptions([]string(servers), batchSize, tradeDateText)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	quotes, err := fetchQuoteSweep(ctx, tdx.QuoteSweepOptions{
+		Requests: requests,
+		Markets:  []string(markets),
+		Limit:    limit,
+		Client:   clientOpts,
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	encoded, err := json.MarshalIndent(quotes, "", "  ")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintln(stdout, string(encoded))
+	return 0
+}
+
+func quoteClientOptions(servers []string, batchSize int, tradeDateText string) (tdx.QuoteClientOptions, error) {
+	opts := tdx.QuoteClientOptions{
+		Servers:   servers,
+		BatchSize: batchSize,
+	}
+	if tradeDateText == "" {
+		return opts, nil
+	}
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		return opts, err
+	}
+	tradeDate, err := time.ParseInLocation("2006-01-02", tradeDateText, loc)
+	if err != nil {
+		return opts, fmt.Errorf("parse --trade-date: %w", err)
+	}
+	opts.TradeDate = tradeDate
+	opts.Location = loc
+	return opts, nil
 }
 
 func runBootstrap(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
@@ -328,6 +506,9 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  import-tdx-day")
 	fmt.Fprintln(out, "  import-tdx-1m")
 	fmt.Fprintln(out, "  import-tdx-5m")
+	fmt.Fprintln(out, "  quote")
+	fmt.Fprintln(out, "  quote-probe")
+	fmt.Fprintln(out, "  quote-sweep")
 }
 
 func datasetFor(period tdx.Period) string {

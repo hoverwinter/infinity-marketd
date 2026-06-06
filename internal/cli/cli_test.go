@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hoverwinter/infinity-marketd/internal/tdx"
 )
 
 func TestImportDryRunCommands(t *testing.T) {
@@ -57,6 +60,149 @@ func TestImportDayRootDryRunWithoutCode(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "quality_issues: 0") {
 		t.Fatalf("output has quality issue:\n%s", out.String())
+	}
+}
+
+func TestQuoteCommandEmitsJSONAndUsesServerOverride(t *testing.T) {
+	original := fetchRealtimeQuotes
+	defer func() { fetchRealtimeQuotes = original }()
+
+	var gotRequests []tdx.QuoteRequest
+	var gotServers []string
+	var gotBatchSize int
+	fetchRealtimeQuotes = func(ctx context.Context, requests []tdx.QuoteRequest, opts tdx.QuoteClientOptions) ([]tdx.Quote, error) {
+		gotRequests = append([]tdx.QuoteRequest(nil), requests...)
+		gotServers = append([]string(nil), opts.Servers...)
+		gotBatchSize = opts.BatchSize
+		return []tdx.Quote{
+			{
+				Market:             "sh",
+				Symbol:             "600519",
+				Price:              123.45,
+				LastClose:          123.00,
+				Open:               123.40,
+				High:               124.00,
+				Low:                122.00,
+				ServerTime:         "9:30:00.000",
+				ServerIntradayTime: "9:30:00.000",
+				Volume:             10000,
+				CurrentVol:         100,
+				Amount:             1000000,
+				Bids: []tdx.QuoteLevel{
+					{Price: 123.44, Volume: 100},
+				},
+				Asks: []tdx.QuoteLevel{
+					{Price: 123.46, Volume: 120},
+				},
+			},
+		}, nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"quote", "--server", "127.0.0.1:7709,127.0.0.2:7709", "--batch-size", "2", "--symbol", "sh:600519,000001"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if strings.Join(gotServers, ",") != "127.0.0.1:7709,127.0.0.2:7709" {
+		t.Fatalf("servers = %#v", gotServers)
+	}
+	if gotBatchSize != 2 {
+		t.Fatalf("batch size = %d", gotBatchSize)
+	}
+	if len(gotRequests) != 2 {
+		t.Fatalf("requests = %#v", gotRequests)
+	}
+	if gotRequests[0] != (tdx.QuoteRequest{Market: "sh", Symbol: "600519"}) {
+		t.Fatalf("first request = %#v", gotRequests[0])
+	}
+	if gotRequests[1] != (tdx.QuoteRequest{Market: "sz", Symbol: "000001"}) {
+		t.Fatalf("second request = %#v", gotRequests[1])
+	}
+	var decoded []tdx.Quote
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if len(decoded) != 1 || decoded[0].Symbol != "600519" || decoded[0].Price != 123.45 {
+		t.Fatalf("decoded = %#v", decoded)
+	}
+}
+
+func TestQuoteProbeCommandEmitsJSON(t *testing.T) {
+	original := probeHQServers
+	defer func() { probeHQServers = original }()
+
+	var gotServers []string
+	probeHQServers = func(ctx context.Context, servers []string, opts tdx.QuoteClientOptions) []tdx.ServerProbeResult {
+		gotServers = append([]string(nil), servers...)
+		return []tdx.ServerProbeResult{
+			{Server: "fast:7709", Success: true, LatencyMS: 5, Preferred: true},
+			{Server: "slow:7709", Success: false, LatencyMS: 20, Error: "timeout"},
+		}
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"quote-probe", "--server", "slow:7709,fast:7709"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if strings.Join(gotServers, ",") != "slow:7709,fast:7709" {
+		t.Fatalf("servers = %#v", gotServers)
+	}
+	var decoded []tdx.ServerProbeResult
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if len(decoded) != 2 || !decoded[0].Preferred {
+		t.Fatalf("decoded = %#v", decoded)
+	}
+}
+
+func TestQuoteSweepCommandUsesStubbedWorkflow(t *testing.T) {
+	original := fetchQuoteSweep
+	defer func() { fetchQuoteSweep = original }()
+
+	var got tdx.QuoteSweepOptions
+	fetchQuoteSweep = func(ctx context.Context, opts tdx.QuoteSweepOptions) ([]tdx.Quote, error) {
+		got = opts
+		return []tdx.Quote{{Market: "sz", Symbol: "000001", Price: 10}}, nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"quote-sweep", "--market", "sh,sz", "--limit", "5", "--server", "127.0.0.1:7709"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if strings.Join(got.Markets, ",") != "sh,sz" || got.Limit != 5 {
+		t.Fatalf("sweep opts = %#v", got)
+	}
+	if strings.Join(got.Client.Servers, ",") != "127.0.0.1:7709" {
+		t.Fatalf("servers = %#v", got.Client.Servers)
+	}
+	var decoded []tdx.Quote
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if len(decoded) != 1 || decoded[0].Symbol != "000001" {
+		t.Fatalf("decoded = %#v", decoded)
+	}
+}
+
+func TestQuoteCommandValidatesArguments(t *testing.T) {
+	tests := [][]string{
+		{"quote"},
+		{"quote", "--symbol", "bj:920001"},
+		{"quote", "--symbol", "bad"},
+	}
+	for _, args := range tests {
+		var out bytes.Buffer
+		var errOut bytes.Buffer
+		code := Run(context.Background(), args, &out, &errOut)
+		if code != 2 {
+			t.Fatalf("%v exit %d stderr=%s stdout=%s", args, code, errOut.String(), out.String())
+		}
 	}
 }
 
