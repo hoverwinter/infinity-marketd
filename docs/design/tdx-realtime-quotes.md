@@ -1064,6 +1064,57 @@ go run ./cmd/marketd quote-sweep \
   --server 60.191.117.167:7709
 ```
 
+## 长期运行的实时行情服务 (`quote-serve` / `quote-status`)
+
+在一次性 `quote` / `quote-sweep` 命令之上，`internal/quotesvc` 提供长期运行的全市场扫盘服务。协议构造和解码仍然只在 `internal/tdx`；`quotesvc` 只负责生命周期和策略，不直接打开 ClickHouse。
+
+### 运行方式
+
+- `marketd quote-serve`：规划并执行一次扫盘。
+  - `--symbol` 显式指定标的（重复或逗号分隔）；不给则按市场在线发现证券列表。
+  - `--market` 发现市场（默认取配置 `quote_service.markets`，即 `sh,sz`）。
+  - `--limit` 限制本次扫盘标的数。
+  - `--resume <run_id>` 从 `infinity_ops` 中的持久批次状态恢复，只重跑未成功的批次。
+  - 收到 `SIGINT`/`SIGTERM` 时优雅停机：停止派发新批次（drain），在 `shutdown_deadline` 内让在飞批次完成，超时再硬取消；最终 run/batch 状态都会落库。
+- `marketd quote-status`：读取 `infinity_ops` 中的 run/batch 记录（经共享 `Store`，**不经 infinity querier**），列出最近的 run 或用 `--run <run_id>` 看单次 run 的批次明细，`--json` 输出 JSON。
+
+### 连接生命周期
+
+每个 server 维护一个有界连接池（`max_conns_per_server`）：复用空闲连接、复用一次 setup 握手；空闲超过 `heartbeat_interval` 的连接在复用前做一次轻量心跳（重发首个 setup 包），心跳失败则关闭重连并计数；空闲超过 `idle_timeout` 或存活超过 `max_conn_age` 的连接退休重连。
+
+### 扫盘、限流和失败恢复
+
+- 标的来源为显式列表或在线证券发现，按 `batch_size` 切成带稳定编号的批次。
+- 批次以 `batch_concurrency` 并发执行，受全局和单 server 令牌桶限流（`global_rate_per_sec` / `per_server_rate_per_sec` / `burst`）。
+- 失败分类为 transport / timeout / server_select / rate_limit / decode；可恢复失败按 `retry_budget` + 指数退避（带抖动，`backoff_base`/`backoff_max`）重试，并可跨 server 回退；**decode（解析）失败不重试，原样保留**，避免掩盖解析回归。
+- 单个批次重试耗尽后标记失败，扫盘继续处理其他批次（失败隔离）。
+- run/batch 进度写入 `infinity_ops.quote_service_runs` / `quote_service_batches`（`ReplacingMergeTree(updated_at)`），resume 基于这些持久状态而非 quote 输出。
+
+### 默认值（保守，面向公共 TDX 服务器）
+
+| 配置 | 默认 |
+|---|---|
+| `batch_size` | 80 |
+| `max_conns_per_server` | 2 |
+| `batch_concurrency` | 2 |
+| `heartbeat_interval` | 30s |
+| `idle_timeout` | 60s |
+| `max_conn_age` | 5m |
+| `dial_timeout` | 5s |
+| `global_rate_per_sec` | 5 |
+| `per_server_rate_per_sec` | 3 |
+| `burst` | 5 |
+| `retry_budget` | 2 |
+| `backoff_base` / `backoff_max` | 500ms / 5s |
+| `shutdown_deadline` | 10s |
+
+### 已知限制
+
+- 只覆盖标准行情 `sh`/`sz` 路径；`bj` 和 `exhq` 仍归各自的 change，不在本服务范围内。
+- 不持久化 quote snapshot：服务只写 ops-plane 的 run/batch 记录，绝不向 canonical 行情 fact 表写实时快照（编译期由 `var _ quotesvc.StateStore = (*clickhouse.Store)(nil)` 保证 StateStore 只暴露 ops 写入）。
+- resume 是 at-least-once：若在 fetch 成功后、状态落库前失败，可能重复抓取一次该批次。当前可接受，因为快照不落库；若将来接受快照存储契约，需重新审视 resume 幂等性。
+- 状态读取走 marketd 自身的 `Store`（与 `marketd status` 一致），不引入 infinity querier、新 binary 或独立 ops 服务。
+
 ## 当前限制
 
 - `bj` 实时行情支持已验证的 `920*` quote；旧 `8*` / `4*` 代码会按 `bj` 请求，但实际可用性取决于 server 是否仍提供该代码，返回不匹配时会报 identity mismatch。
@@ -1071,10 +1122,9 @@ go run ./cmd/marketd quote-sweep \
 - 含 `bj` 的 quote request 当前强制单只分包；live 多条 response 解析需要单独完善后再放开批量。
 - `exhq` public server 可用性不稳定；metadata 可用不代表 quote/K 线/分时/分笔也可用。
 - `exhq` 文本字段已按 GB18030/GBK fallback 解码；解码失败时置空展示字段，不丢弃 market/code。
-- 不做长期心跳保活。
-- 不做全局连接池。
+- 长期心跳保活和连接池已由 `quote-serve` / `internal/quotesvc` 提供；一次性 `quote` / `quote-sweep` 命令仍是无池的短连接。
 - 不做实时流式订阅。
-- 不写 ClickHouse。
+- 不写 ClickHouse 行情 fact 表（实时快照不落库；`quote-serve` 的 ops-plane run/batch 记录除外）。
 - 标准 `hq` 证券列表名称已按 GB18030/GBK 解码；解码失败时只置空 `name`，不丢弃代码。
 - `quote_time` 只有调用方显式提供 `--trade-date` 时才输出。
 
@@ -1082,5 +1132,5 @@ go run ./cmd/marketd quote-sweep \
 
 - 继续验证 `bj` 证券列表 discovery，以及 live 多条 quote response 的完整 parser 边界。
 - 给 `exhq` 增加专门的 server probe 命令，区分 count/list/quote/K 线等能力。
-- 如果需要长期运行的行情服务，再引入连接池、心跳和定期重连。
+- ~~如果需要长期运行的行情服务，再引入连接池、心跳和定期重连。~~ 已由 `quote-serve` / `internal/quotesvc` 实现（见上节）。
 - 如果需要持久化 quote snapshot，另起 OpenSpec change 定义 ClickHouse schema、保留策略和去重语义。

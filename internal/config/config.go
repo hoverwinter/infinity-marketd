@@ -6,15 +6,52 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	ClickHouse ClickHouseConfig `yaml:"clickhouse"`
-	TDX        TDXConfig        `yaml:"tdx"`
-	Runtime    RuntimeConfig    `yaml:"runtime"`
-	Logging    LoggingConfig    `yaml:"logging"`
+	ClickHouse   ClickHouseConfig   `yaml:"clickhouse"`
+	TDX          TDXConfig          `yaml:"tdx"`
+	Runtime      RuntimeConfig      `yaml:"runtime"`
+	Logging      LoggingConfig      `yaml:"logging"`
+	QuoteService QuoteServiceConfig `yaml:"quote_service"`
+}
+
+// Duration parses Go duration strings (e.g. "30s", "5m") from YAML.
+type Duration time.Duration
+
+func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+	parsed, err := time.ParseDuration(strings.TrimSpace(value.Value))
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", value.Value, err)
+	}
+	*d = Duration(parsed)
+	return nil
+}
+
+func (d Duration) Duration() time.Duration { return time.Duration(d) }
+
+// QuoteServiceConfig configures the long-running realtime quote service.
+// All fields have safe defaults (see Default) so existing commands run unchanged.
+type QuoteServiceConfig struct {
+	Servers           []string `yaml:"servers"`
+	Markets           []string `yaml:"markets"`
+	BatchSize         int      `yaml:"batch_size"`
+	MaxConnsPerServer int      `yaml:"max_conns_per_server"`
+	BatchConcurrency  int      `yaml:"batch_concurrency"`
+	HeartbeatInterval Duration `yaml:"heartbeat_interval"`
+	IdleTimeout       Duration `yaml:"idle_timeout"`
+	MaxConnAge        Duration `yaml:"max_conn_age"`
+	DialTimeout       Duration `yaml:"dial_timeout"`
+	GlobalRatePerSec  float64  `yaml:"global_rate_per_sec"`
+	PerServerRate     float64  `yaml:"per_server_rate_per_sec"`
+	Burst             int      `yaml:"burst"`
+	RetryBudget       int      `yaml:"retry_budget"`
+	BackoffBase       Duration `yaml:"backoff_base"`
+	BackoffMax        Duration `yaml:"backoff_max"`
+	ShutdownDeadline  Duration `yaml:"shutdown_deadline"`
 }
 
 type ClickHouseConfig struct {
@@ -105,6 +142,23 @@ func Default() Config {
 				Compress:   true,
 			},
 		},
+		QuoteService: QuoteServiceConfig{
+			Markets:           []string{"sh", "sz"},
+			BatchSize:         80,
+			MaxConnsPerServer: 2,
+			BatchConcurrency:  2,
+			HeartbeatInterval: Duration(30 * time.Second),
+			IdleTimeout:       Duration(60 * time.Second),
+			MaxConnAge:        Duration(5 * time.Minute),
+			DialTimeout:       Duration(5 * time.Second),
+			GlobalRatePerSec:  5,
+			PerServerRate:     3,
+			Burst:             5,
+			RetryBudget:       2,
+			BackoffBase:       Duration(500 * time.Millisecond),
+			BackoffMax:        Duration(5 * time.Second),
+			ShutdownDeadline:  Duration(10 * time.Second),
+		},
 	}
 }
 
@@ -132,6 +186,9 @@ func Load(overrides Overrides) (Config, error) {
 		return cfg, fmt.Errorf("clickhouse database names are required")
 	}
 	if err := validateLoggingConfig(cfg.Logging); err != nil {
+		return cfg, err
+	}
+	if err := validateQuoteServiceConfig(cfg.QuoteService); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
@@ -327,6 +384,47 @@ func validateLoggingConfig(cfg LoggingConfig) error {
 	}
 	if cfg.File.MaxAgeDays < 0 {
 		return fmt.Errorf("logging.file.max_age_days must be non-negative")
+	}
+	return nil
+}
+
+func validateQuoteServiceConfig(cfg QuoteServiceConfig) error {
+	positive := []struct {
+		name  string
+		value int
+	}{
+		{"quote_service.batch_size", cfg.BatchSize},
+		{"quote_service.max_conns_per_server", cfg.MaxConnsPerServer},
+		{"quote_service.batch_concurrency", cfg.BatchConcurrency},
+		{"quote_service.burst", cfg.Burst},
+	}
+	for _, p := range positive {
+		if p.value <= 0 {
+			return fmt.Errorf("%s must be positive", p.name)
+		}
+	}
+	if cfg.RetryBudget < 0 {
+		return fmt.Errorf("quote_service.retry_budget must be non-negative")
+	}
+	if cfg.GlobalRatePerSec < 0 || cfg.PerServerRate < 0 {
+		return fmt.Errorf("quote_service rate limits must be non-negative")
+	}
+	durations := []struct {
+		name  string
+		value Duration
+	}{
+		{"quote_service.heartbeat_interval", cfg.HeartbeatInterval},
+		{"quote_service.idle_timeout", cfg.IdleTimeout},
+		{"quote_service.max_conn_age", cfg.MaxConnAge},
+		{"quote_service.dial_timeout", cfg.DialTimeout},
+		{"quote_service.backoff_base", cfg.BackoffBase},
+		{"quote_service.backoff_max", cfg.BackoffMax},
+		{"quote_service.shutdown_deadline", cfg.ShutdownDeadline},
+	}
+	for _, d := range durations {
+		if d.value.Duration() < 0 {
+			return fmt.Errorf("%s must be non-negative", d.name)
+		}
 	}
 	return nil
 }

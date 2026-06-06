@@ -117,6 +117,47 @@ ORDER BY (dataset, asset)`, opsDB),
 ENGINE = ReplacingMergeTree(updated_at)
 PARTITION BY toYYYYMM(started_at)
 ORDER BY (dataset, started_at, run_id)`, opsDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.quote_service_runs
+(
+    run_id String,
+    status LowCardinality(String),
+    markets Array(LowCardinality(String)),
+    symbol_source LowCardinality(String),
+    batch_size UInt32,
+    planned_symbols UInt32,
+    planned_batches UInt32,
+    succeeded_batches UInt32,
+    failed_batches UInt32,
+    skipped_batches UInt32,
+    rows_fetched UInt64,
+    started_at DateTime64(3),
+    finished_at Nullable(DateTime64(3)),
+    duration_ms Nullable(UInt64),
+    error String,
+    updated_at DateTime64(3) DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(started_at)
+ORDER BY (run_id)`, opsDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.quote_service_batches
+(
+    run_id String,
+    batch_no UInt32,
+    status LowCardinality(String),
+    symbol_count UInt32,
+    first_symbol String,
+    last_symbol String,
+    attempts UInt32,
+    rows_fetched UInt64,
+    started_at Nullable(DateTime64(3)),
+    finished_at Nullable(DateTime64(3)),
+    duration_ms Nullable(UInt64),
+    failure_kind LowCardinality(String),
+    error String,
+    updated_at DateTime64(3) DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY (run_id, batch_no)`, opsDB),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.data_quality_issues
 (
     issue_id String,

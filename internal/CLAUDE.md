@@ -12,6 +12,7 @@ All application code (private to this module). Two planes share `internal/clickh
 | `infinitycli` | infinity command routing |
 | `ingest` | import orchestration (parse → write, TaskRun, Watermark) |
 | `tdx` | TDX binary parsing, market inference, file discovery |
+| `quotesvc` | long-running realtime quote service: connection pools, rate limiting, sweep scheduling, retry/resume, durable ops progress |
 | `querier` | HTTP query service, DTOs, `Repository` interface, HTTP client |
 | `clickhouse` | connection, insert (`store.go`), schema DDL (`schema.go`), read SQL (`query.go`) |
 | `model` | plain shared data structs |

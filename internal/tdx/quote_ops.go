@@ -151,6 +151,16 @@ func (s *QuoteSession) Close() error {
 	return s.conn.Close()
 }
 
+// Heartbeat performs a lightweight round trip to verify the connection is still
+// usable before reuse. It resends the first HQ setup packet, which a healthy
+// server answers cheaply.
+func (s *QuoteSession) Heartbeat() error {
+	if _, err := s.call(hqSetupPackets[0]); err != nil {
+		return fmt.Errorf("TDX HQ heartbeat %s: %w", s.server, err)
+	}
+	return nil
+}
+
 func (s *QuoteSession) Fetch(requests []QuoteRequest) ([]Quote, error) {
 	if len(requests) == 0 {
 		return nil, fmt.Errorf("at least one symbol is required")
@@ -482,6 +492,13 @@ func marketCodeForStandardHQ(market string) int {
 
 func isDecodeError(err error) bool {
 	return strings.Contains(err.Error(), "decode TDX HQ quote response")
+}
+
+// IsQuoteDecodeError reports whether err is a TDX quote protocol decode failure
+// (as opposed to a transport/connection failure). Callers use this to avoid
+// hiding parser regressions behind transport retries.
+func IsQuoteDecodeError(err error) bool {
+	return err != nil && isDecodeError(err)
 }
 
 func SortProbeResults(results []ServerProbeResult) {

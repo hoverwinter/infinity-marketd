@@ -4,6 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Per-directory `CLAUDE.md` files carry the detail; this file is the map and the rules. Read the `CLAUDE.md` in the directory you're working in.
 
+## 思维方式 (Working Principles)
+
+- **第一性原理 (First principles):** 从真实的数据格式、协议、约束出发推理,不要套用类比或"最佳实践"模板。在下结论前**先读代码/schema 确认系统实际怎么跑**,而不是凭印象推测。
+- **奥卡姆剃刀 (Occam's razor):** 选能解决问题的最小方案。除非现有路径确实扛不住,否则**不新增 binary、package、表、依赖或抽象层**。优先复用 `Store`、现有表、现有命令。
+- **苏格拉底式提问 (Socratic questioning):** 动手前先问"我们到底在解决什么问题?这需求从哪来?它是真问题吗?"。主动暴露并质疑隐含假设(**包括用户的和 spec 里的**),而不是照单执行。一个写在文档里的 open question,可能本身就是伪命题。
+- **费曼技巧 (Feynman):** 能用大白话讲清楚的设计才算想明白了;讲不简单,通常说明它要么是错的、要么过度设计了。描述时**点到具体的 file/function/表**,不要用含糊的"某某层""某某服务"糊弄。
+- **不要过度设计 (No over-engineering):** 别把一个内置能力做成架构工程。不要凭空发明"服务""框架""抽象层",也不要纠结现有代码已经回答了的问题。**方案的体量要匹配问题的体量。** 拿不准时,先看现有代码是怎么做同类事情的,照着做。
+
 ## Commands
 
 ```bash

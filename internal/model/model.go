@@ -70,3 +70,41 @@ type Watermark struct {
 	Message      string
 	UpdatedAt    time.Time
 }
+
+// QuoteServiceRun is one durable realtime quote sweep run in the ops plane.
+type QuoteServiceRun struct {
+	RunID            string
+	Status           string
+	Markets          []string
+	SymbolSource     string
+	BatchSize        uint32
+	PlannedSymbols   uint32
+	PlannedBatches   uint32
+	SucceededBatches uint32
+	FailedBatches    uint32
+	SkippedBatches   uint32
+	RowsFetched      uint64
+	StartedAt        time.Time
+	FinishedAt       *time.Time
+	DurationMS       *uint64
+	Error            string
+	UpdatedAt        time.Time
+}
+
+// QuoteServiceBatch is one durable batch progress record within a run.
+type QuoteServiceBatch struct {
+	RunID       string
+	BatchNo     uint32
+	Status      string
+	SymbolCount uint32
+	FirstSymbol string
+	LastSymbol  string
+	Attempts    uint32
+	RowsFetched uint64
+	StartedAt   *time.Time
+	FinishedAt  *time.Time
+	DurationMS  *uint64
+	FailureKind string
+	Error       string
+	UpdatedAt   time.Time
+}

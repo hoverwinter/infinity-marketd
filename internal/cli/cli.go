@@ -93,6 +93,10 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runHQBlockMeta(ctx, args[1:], stdout, stderr)
 	case "hq-block":
 		return runHQBlock(ctx, args[1:], stdout, stderr)
+	case "quote-serve":
+		return runQuoteServe(ctx, args[1:], stdout, stderr)
+	case "quote-status":
+		return runQuoteStatus(ctx, args[1:], stdout, stderr)
 	case "exquote-markets":
 		return runExQuoteMarkets(ctx, args[1:], stdout, stderr)
 	case "exquote-count":
@@ -1332,6 +1336,8 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  hq-finance")
 	fmt.Fprintln(out, "  hq-block-meta")
 	fmt.Fprintln(out, "  hq-block")
+	fmt.Fprintln(out, "  quote-serve")
+	fmt.Fprintln(out, "  quote-status")
 	fmt.Fprintln(out, "  exquote-markets")
 	fmt.Fprintln(out, "  exquote-count")
 	fmt.Fprintln(out, "  exquote-instruments")

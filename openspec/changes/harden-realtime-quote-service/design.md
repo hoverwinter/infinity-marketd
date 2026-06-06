@@ -14,7 +14,7 @@ This change focuses on operationalizing realtime quote collection. It does not c
 - Detect unhealthy or stale connections through heartbeat checks, idle expiry, and periodic reconnects.
 - Execute full-market sweeps with configurable batch size, request rate, retry budget, backoff, and failure isolation.
 - Persist run and batch state in `infinity_ops` so operators can inspect active, completed, failed, and resumable sweeps.
-- Expose service health and run status without requiring ad-hoc ClickHouse reads from CLI code.
+- Expose service health and run status through `marketd` subcommands that read the ops plane via the shared `Store`, consistent with the existing `marketd status` command.
 - Keep TDX protocol parsing isolated in `internal/tdx`.
 
 **Non-Goals:**
@@ -51,9 +51,9 @@ This change focuses on operationalizing realtime quote collection. It does not c
   - Rationale: operators need visibility into jobs and batches even when quote snapshots are not stored. Ops tables can use logical keys such as `run_id` and `(run_id, batch_no)` with `ReplacingMergeTree(updated_at)`.
   - Alternative considered: reuse `task_runs` only. That records coarse import-like task history, but it cannot answer which symbols/batches are complete, failed, retried, or resumable.
 
-- Expose service status through the running service and future querier repository paths, not direct CLI ClickHouse reads.
-  - Rationale: repository rules keep ClickHouse read SQL centralized. A `marketd` status command can query the service admin endpoint; persisted ops reads can be added to `internal/clickhouse/query.go` and the querier API when needed.
-  - Alternative considered: let CLI commands query `infinity_ops` directly. That violates the read-plane boundary and spreads SQL.
+- Expose service status as a built-in `marketd` capability that reads the ops plane through the shared `Store`, not through the `infinity` querier.
+  - Rationale: the read-plane invariant (read SQL only in `internal/clickhouse/query.go`) governs the `infinity` querier serving market *facts* (bars). It does not govern `marketd` reading its own ops metadata. `marketd` already owns `infinity_ops` — it writes `watermarks`/`task_runs` and reads them back via `Store` (e.g. `marketd status` → `Store.LatestWatermarks`). Realtime run/batch status follows the same path: a `marketd` subcommand reads the new ops tables through `Store`. No `infinity` querier involvement, no new binary, no separate service concept.
+  - Alternative considered: route ops status through the `infinity` querier API and `query.go`. Rejected: it conflates the market-fact read model with operational metadata and bloats the querier `Repository` with concerns unrelated to bars.
 
 - Resume sweeps by run state rather than by inferring from quote output.
   - Rationale: quote snapshots may not be persisted. Resume must be based on durable batch states and the original sweep parameters.
@@ -78,7 +78,6 @@ This change focuses on operationalizing realtime quote collection. It does not c
 
 ## Open Questions
 
-- Should service status be exposed only as a local HTTP admin endpoint, or also through the existing `infinity` querier API?
 - What default request rate is acceptable for commonly reachable public TDX HQ servers?
 - Should resume continue the same `run_id` or create a child run linked to the failed run for clearer audit history?
 - What retention policy should operators use for realtime service run and batch records?
