@@ -6,7 +6,7 @@
 
 ## 基本定位
 
-TDX server 指通达信客户端协议使用的行情服务器。`pytdx`、`mootdx` 和 `marketd` 在线行情实现连接的都是这类服务器。
+TDX server 指通达信客户端协议使用的行情服务器。通达信客户端、`pytdx`、`mootdx`、`millken/tdx` 和 `marketd` 在线行情实现连接的都是这类服务器。
 
 典型标准行情地址示例：
 
@@ -22,7 +22,7 @@ TDX server 指通达信客户端协议使用的行情服务器。`pytdx`、`moot
 交易所官方行情源
   -> 授权行情商 / 券商 / 转发系统
     -> TDX 行情服务器
-      -> 通达信客户端 / pytdx / mootdx / marketd
+      -> 通达信客户端 / pytdx / mootdx / millken/tdx / marketd
 ```
 
 因此：
@@ -162,7 +162,7 @@ TDX 数据源分三类，工程边界不同：
 | Source class | Meaning | Examples |
 | --- | --- | --- |
 | `client-local` | 已安装 TDX 客户端在本机维护的目录和文件 | `vipdoc/`, `T0002/blocknew/`, 本机 `gbbq`, 本机扩展行情目录如 `Lxxx` |
-| `offline-package` | 从 TDX 官方页面下载的 ZIP 或 `.dat` 包 | `hsjday.zip`, `shlday.zip`, `tdxfin.zip`, `tdxgp.zip` |
+| `offline-package` | 从 TDX 官方页面或显式远程文件命令下载的 ZIP 或 `.dat` 包 | `hsjday.zip`, `shlday.zip`, `tdxfin.zip`, `tdxgp.zip`, `gpcwYYYYMMDD.zip` |
 | `online-provider` | 连接 TDX `hq` / `exhq` server 的请求/响应读取 | `hq-xdxr`, `hq-block`, `exquote-bars`, `/api/tdx/*` |
 
 关键边界：
@@ -170,6 +170,7 @@ TDX 数据源分三类，工程边界不同：
 - 在线 `hq` / `exhq` 返回 live 或 server 保留的请求结果，默认不落库。
 - `client-local` 文件来自某台机器的 TDX 客户端状态，完整性取决于客户端版本、下载记录和用户配置。
 - `offline-package` 更适合全量 bootstrap/backfill，但仍需校验包清单、文件大小、日期和格式版本。
+- 远程财务包清单/下载使用显式 `tdx-fin-files` / `tdx-fin-fetch` 命令，下载后仍按本地文件解析、预检或导入。
 - 分时点不是 1 分钟 OHLCV；不能把 server 分时直接当作本地 `.lc1` 一分钟 K。
 - 需要落库 server 分时点时，使用显式 `import-tdx-intraday-points` 写入 `a_share_intraday_points`；普通 `/api/tdx/*` live provider 读取不隐式写 ClickHouse。
 - 专业财务 ZIP/`.dat` 文件不是 `hq` 的财务摘要字段。
@@ -183,5 +184,7 @@ TDX 数据源分三类，工程边界不同：
 - `pytdx.hq`：标准行情协议、证券列表、quote、K 线、分时、分笔、F10、除权除息、财务摘要和板块。
 - `pytdx.exhq`：扩展行情协议、扩展市场、品种、quote、K 线、分时和分笔。
 - `mootdx`：对 TDX 行情、本地文件和命令行工具做了更高层封装。
+- `mirrowall/gotdx`：早期 Go 标准行情原型，主要可参考证券数量/列表请求。
+- `millken/tdx`：较新的 Go TDX client，可参考 sorted quote list、top board、board members、fund detail 和 LHB 解析。
 
-更多 Python 生态能力对照见 [pytdx and mootdx Capability Reference](tdx-python-libraries.md)。
+更多 TDX 生态库能力对照见 [TDX Library Capability Reference](tdx-python-libraries.md)。

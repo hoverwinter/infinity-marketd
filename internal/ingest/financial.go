@@ -186,6 +186,51 @@ func ImportTDXFinancial(ctx context.Context, opts TDXFinancialOptions) (TDXFinan
 	return summary, nil
 }
 
+func ParseTDXFinancial(_ context.Context, opts TDXFinancialOptions) (TDXFinancialSummary, error) {
+	if strings.TrimSpace(opts.File) == "" {
+		return TDXFinancialSummary{}, fmt.Errorf("file is required")
+	}
+	loc, err := financialLocation(opts.Timezone)
+	if err != nil {
+		return TDXFinancialSummary{}, err
+	}
+	dictionary, err := finance.LoadFinancialItemDictionary()
+	if err != nil {
+		return TDXFinancialSummary{}, err
+	}
+	dictionaryMap := finance.FinancialItemDictionaryMap(dictionary)
+	inputPath := expandHome(opts.File)
+	result, err := finance.ParseFinancialPackage(inputPath, loc, dictionaryMap)
+	if err != nil {
+		return TDXFinancialSummary{}, err
+	}
+	summary := TDXFinancialSummary{
+		DryRun:          true,
+		InputPath:       inputPath,
+		Dataset:         "a_share_financial_raw_items",
+		TargetTable:     "a_share_financial_raw_items",
+		InputFormat:     result.Format,
+		FilesDiscovered: result.FilesDiscovered,
+		ManifestFiles:   result.ManifestFiles,
+		DictionaryCount: len(dictionary),
+		ManifestIssues:  len(result.Issues),
+	}
+	for i, entry := range result.Entries {
+		issues := issuesFromParse(newRunID(), summary.Dataset, entry.InputPath, "", "", entry.Issues)
+		if len(entry.Rows) == 0 {
+			issues = append(issues, zeroRowsIssue(newRunID(), summary.Dataset, entry.InputPath, "", ""))
+		}
+		summary.FilesProcessed++
+		summary.RowsWritten += uint64(len(entry.Rows))
+		summary.RowsSkipped += uint64(skippedFromIssues(entry.Issues))
+		summary.QualityIssues += len(issues)
+		if opts.Progress != nil {
+			opts.Progress(i+1, len(result.Entries), summary)
+		}
+	}
+	return summary, nil
+}
+
 func ImportTDXGP(ctx context.Context, opts TDXGPOptions) (TDXGPSummary, error) {
 	if strings.TrimSpace(opts.File) == "" {
 		return TDXGPSummary{}, fmt.Errorf("file is required")

@@ -4,9 +4,13 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,6 +162,76 @@ func TestImportTDXFinancialMissingFile(t *testing.T) {
 	code := Run(context.Background(), []string{"import-tdx-fin", "--file", filepath.Join(t.TempDir(), "missing.zip"), "--dry-run"}, &out, &errOut)
 	if code == 0 || !strings.Contains(errOut.String(), "no such file") {
 		t.Fatalf("exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+}
+
+func TestTDXFinRemoteWorkflowCommands(t *testing.T) {
+	raw := readTestFile(t, filepath.Join("..", "tdx", "testdata", "finance", "gpcw_one_stock.dat"))
+	payload := zipBytes(t, map[string][]byte{"gpcw20251231.dat": raw})
+	sum := fmt.Sprintf("%x", md5.Sum(payload))
+	manifest := fmt.Sprintf("gpcw20251231.zip,%s,%d\n", sum, len(payload))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/tdxfin/gpcw.txt", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(manifest))
+	})
+	mux.HandleFunc("/tdxfin/gpcw20251231.zip", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	baseURL := server.URL + "/tdxfin/"
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"tdx-fin-files", "--base-url", baseURL}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("files exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if !strings.Contains(out.String(), "gpcw20251231.zip "+sum) {
+		t.Fatalf("files output:\n%s", out.String())
+	}
+
+	dir := t.TempDir()
+	out.Reset()
+	errOut.Reset()
+	code = Run(context.Background(), []string{"tdx-fin-fetch", "--base-url", baseURL, "--filename", "gpcw20251231.zip", "--dir", dir}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("fetch exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if !strings.Contains(out.String(), "downloaded gpcw20251231.zip") {
+		t.Fatalf("fetch output:\n%s", out.String())
+	}
+	downloaded := filepath.Join(dir, "gpcw20251231.zip")
+	if _, err := os.Stat(downloaded); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	code = Run(context.Background(), []string{"tdx-fin-fetch", "--base-url", baseURL, "--filename", "gpcw20251231.zip", "--dir", dir}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("fetch skip exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if !strings.Contains(out.String(), "skipped gpcw20251231.zip") {
+		t.Fatalf("fetch skip output:\n%s", out.String())
+	}
+
+	out.Reset()
+	errOut.Reset()
+	code = Run(context.Background(), []string{"tdx-fin-parse", "--file", downloaded}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("parse exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	for _, want := range []string{
+		"mode: dry-run",
+		"files_processed: 1",
+		"dictionary_count: 584",
+		"rows_written: 4",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("parse output missing %q:\n%s", want, out.String())
+		}
 	}
 }
 
@@ -1007,6 +1081,14 @@ func readTestFile(t *testing.T, path string) []byte {
 
 func writeZip(t *testing.T, path string, files map[string][]byte) {
 	t.Helper()
+	raw := zipBytes(t, files)
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func zipBytes(t *testing.T, files map[string][]byte) []byte {
+	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	for name, raw := range files {
@@ -1021,9 +1103,7 @@ func writeZip(t *testing.T, path string, files map[string][]byte) {
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	return buf.Bytes()
 }
 
 func dailyRecord() []byte {

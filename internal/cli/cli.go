@@ -21,6 +21,7 @@ import (
 	"github.com/hoverwinter/infinity-marketd/internal/logging"
 	"github.com/hoverwinter/infinity-marketd/internal/model"
 	"github.com/hoverwinter/infinity-marketd/internal/tdx"
+	"github.com/hoverwinter/infinity-marketd/internal/tdx/finance"
 )
 
 var fetchRealtimeQuotes = tdx.FetchRealtimeQuotes
@@ -72,6 +73,12 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runImportTDXFinancial(ctx, args[1:], stdout, stderr)
 	case "import-tdx-gp":
 		return runImportTDXGP(ctx, args[1:], stdout, stderr)
+	case "tdx-fin-files":
+		return runTDXFinFiles(ctx, args[1:], stdout, stderr)
+	case "tdx-fin-fetch":
+		return runTDXFinFetch(ctx, args[1:], stdout, stderr)
+	case "tdx-fin-parse":
+		return runTDXFinParse(ctx, args[1:], stdout, stderr)
 	case "import-tdx-intraday-points":
 		return runImportIntradayPoints(ctx, args[1:], stdout, stderr)
 	case "import-tdx-gbbq":
@@ -1786,6 +1793,108 @@ func runImportTDXGP(ctx context.Context, args []string, stdout io.Writer, stderr
 	return 0
 }
 
+func runTDXFinFiles(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var baseURL string
+	fs := newFlagSet("tdx-fin-files", stderr)
+	fs.StringVar(&baseURL, "base-url", finance.DefaultFinancialRemoteBaseURL, "remote tdxfin base URL")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	files, err := finance.RemoteClient{BaseURL: baseURL}.List(ctx)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printRemoteFinancialFiles(stdout, files)
+	return 0
+}
+
+func runTDXFinFetch(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var baseURL, filename, dir string
+	var all bool
+	fs := newFlagSet("tdx-fin-fetch", stderr)
+	fs.StringVar(&baseURL, "base-url", finance.DefaultFinancialRemoteBaseURL, "remote tdxfin base URL")
+	fs.StringVar(&filename, "filename", "", "financial package filename, e.g. gpcw20251231.zip")
+	fs.StringVar(&dir, "dir", ".", "download directory")
+	fs.BoolVar(&all, "all", false, "fetch every package in gpcw.txt")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	filename = strings.TrimSpace(filename)
+	if all && filename != "" {
+		fmt.Fprintln(stderr, "use either --filename or --all")
+		return 2
+	}
+	if !all && filename == "" {
+		fmt.Fprintln(stderr, "--filename or --all is required")
+		return 2
+	}
+	client := finance.RemoteClient{BaseURL: baseURL}
+	files, err := client.List(ctx)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	selected := files
+	if !all {
+		if err := finance.ValidateRemoteFinancialFilename(filename); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		file, ok := finance.FindRemoteFinancialFile(files, filename)
+		if !ok {
+			fmt.Fprintf(stderr, "%s not found in remote manifest\n", filename)
+			return 1
+		}
+		selected = []finance.RemoteFinancialFile{file}
+	}
+	for _, file := range selected {
+		result, err := client.Fetch(ctx, file, dir)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		printRemoteFinancialFetchResult(stdout, result)
+	}
+	return 0
+}
+
+func runTDXFinParse(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
+	var file string
+	fs := newFlagSet("tdx-fin-parse", stderr)
+	config.RegisterCommonFlags(fs, &overrides)
+	fs.StringVar(&file, "file", "", "downloaded gpcw zip or dat file")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(file) == "" {
+		fmt.Fprintln(stderr, "--file is required")
+		return 2
+	}
+	cfg, err := config.Load(overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	summary, err := ingest.ParseTDXFinancial(ctx, ingest.TDXFinancialOptions{
+		File:     file,
+		DryRun:   true,
+		Timezone: cfg.Runtime.Timezone,
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printTDXFinancialSummary(stdout, summary)
+	return 0
+}
+
 func runImportGBBQ(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	var overrides config.Overrides
 	var file, since, until string
@@ -2167,6 +2276,24 @@ func printTDXFinancialSummary(out io.Writer, summary ingest.TDXFinancialSummary)
 	fmt.Fprintf(out, "quality_issues: %d\n", summary.QualityIssues)
 }
 
+func printRemoteFinancialFiles(out io.Writer, files []finance.RemoteFinancialFile) {
+	for _, file := range files {
+		fmt.Fprintf(out, "%s %s %d", file.Filename, file.MD5, file.Size)
+		if file.ReportDate != "" {
+			fmt.Fprintf(out, " %s", file.ReportDate)
+		}
+		fmt.Fprintln(out)
+	}
+}
+
+func printRemoteFinancialFetchResult(out io.Writer, result finance.RemoteFinancialFetchResult) {
+	status := "downloaded"
+	if result.Skipped {
+		status = "skipped"
+	}
+	fmt.Fprintf(out, "%s %s %s bytes=%d\n", status, result.Filename, result.Path, result.Bytes)
+}
+
 func printRefreshSummary(out io.Writer, summary refreshSummary) {
 	mode := "write"
 	if summary.DryRun {
@@ -2377,6 +2504,9 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  import-tdx-vipdoc-zip")
 	fmt.Fprintln(out, "  import-tdx-fin")
 	fmt.Fprintln(out, "  import-tdx-gp")
+	fmt.Fprintln(out, "  tdx-fin-files")
+	fmt.Fprintln(out, "  tdx-fin-fetch")
+	fmt.Fprintln(out, "  tdx-fin-parse")
 	fmt.Fprintln(out, "  import-tdx-intraday-points")
 	fmt.Fprintln(out, "  import-tdx-gbbq")
 	fmt.Fprintln(out, "  import-tdx-block")

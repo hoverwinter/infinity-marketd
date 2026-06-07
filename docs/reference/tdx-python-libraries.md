@@ -1,8 +1,14 @@
-# pytdx and mootdx Capability Reference
+# TDX Library Capability Reference
 
 整理日期：2026-06-07
 
-本文档整理 `pytdx` 和 `mootdx` 的主要能力，用于 `marketd` 规划和验收通达信能力平替。目标不是依赖这些 Python 包，而是明确它们提供了哪些功能、哪些能力已经或应该由 Go 实现覆盖。
+本文档整理 `pytdx`、`mootdx`、`mirrowall/gotdx` 和 `millken/tdx` 的主要能力，用于 `marketd` 规划和验收通达信能力平替。
+
+目标不是依赖这些库，而是明确：
+
+- 哪些能力 `marketd` 已经用 Go 实现并接入 ClickHouse / HTTP API；
+- 哪些能力只是外部库的便利层，`marketd` 不需要照搬；
+- 哪些协议能力仍值得从外部项目借鉴。
 
 ## Sources
 
@@ -11,475 +17,243 @@
 - pytdx trade docs: https://pytdx-docs.readthedocs.io/zh-cn/latest/pytdx_trade/
 - pytdx reader CLI docs: https://pytdx-docs.readthedocs.io/zh-cn/latest/hqreader/
 - pytdx financial crawler docs: https://pytdx-docs.readthedocs.io/zh-cn/latest/pytdx_crawler/
-- pytdx source: https://github.com/rainx/pytdx
+- pytdx archive source: https://github.com/rainx/pytdx
 - mootdx GitHub: https://github.com/mootdx/mootdx
 - mootdx docs: https://www.mootdx.com
 - mootdx PyPI: https://pypi.org/project/mootdx/
+- mirrowall/gotdx GitHub: https://github.com/mirrowall/gotdx
+- millken/tdx GitHub: https://github.com/millken/tdx
+- millken/tdx package docs: https://pkg.go.dev/github.com/millken/tdx
 
-## pytdx
+## Current marketd Snapshot
 
-`pytdx` 是较底层的通达信协议实现。它提供标准行情、扩展行情、本地文件读取、财务文件下载解析、连接池和交易包装等能力。对 `marketd` 最有参考价值的是 `hq` 的标准 A 股行情协议和 `reader` 的本地 TDX 文件格式覆盖。
-
-### Package Layout
-
-| Module | Capability | Notes for marketd |
-| --- | --- | --- |
-| `pytdx.hq` | 标准行情，主要用于 A 股、指数、分时、分笔、F10、除权除息、财务信息、板块信息 | A 股实时行情平替的主参考 |
-| `pytdx.exhq` | 扩展行情，期货、期权、港股、外盘等扩展市场 | 不是 A 股标准实时行情主路径 |
-| `pytdx.reader` | 读取本地通达信数据文件 | 可作为 `.day`、`.lc1`、`.lc5`、`.1`、`.5`、板块文件解析参考 |
-| `pytdx.crawler` | 下载和解析历史专业财务文件 `gpcw*.zip/.dat` | 可规划为后续财务数据导入能力 |
-| `pytdx.pool` | 连接池、failover、主备连接 | 可参考但不必照搬 |
-| `pytdx.trade` | 通过 `TdxTradeServer` 包装 `trade.dll` 的交易接口 | 不属于 `marketd` 数据平面目标 |
-| CLI | `hqget`、`hqreader` | 可参考数据导出和调试方式 |
-
-### `pytdx.hq` Standard行情
-
-典型用法：
-
-```python
-from pytdx.hq import TdxHq_API
-from pytdx.params import TDXParams
-
-api = TdxHq_API(heartbeat=True, auto_retry=True)
-
-with api.connect("180.153.18.170", 7709):
-    rows = api.get_security_quotes([
-        (TDXParams.MARKET_SH, "600519"),
-        (TDXParams.MARKET_SZ, "000001"),
-    ])
-    df = api.to_df(rows)
-```
-
-市场代码：
-
-| TDX market | Meaning |
-| --- | --- |
-| `0` | Shenzhen / `sz` |
-| `1` | Shanghai / `sh` |
-
-Core API surface:
-
-| API | Purpose |
-| --- | --- |
-| `get_security_quotes` | 多证券实时快照，含当前价、OHLC、成交量额、五档盘口 |
-| `get_security_bars` | 股票 K 线 |
-| `get_index_bars` | 指数 K 线 |
-| `get_security_count` | 市场证券数量 |
-| `get_security_list` | 股票列表 |
-| `get_minute_time_data` | 当日分时 |
-| `get_history_minute_time_data` | 历史分时 |
-| `get_transaction_data` | 当日分笔成交 |
-| `get_history_transaction_data` | 历史分笔成交 |
-| `get_company_info_category` | 公司信息目录 |
-| `get_company_info_content` | 公司信息内容 |
-| `get_xdxr_info` | 除权除息信息 |
-| `get_finance_info` | 财务信息 |
-| `get_block_info_meta` / `get_block_info` | 板块信息 |
-
-`get_security_bars` / `get_index_bars` 的 `count` 参数单次最多 800 根 K 线。`start` 是从最近 bar 向历史方向的偏移位置；超过 800 根的历史应使用 `start=0,800,1600,...` 分页读取。800 是协议页大小限制，不是最近 800 天的服务端保留窗口。
-
-`get_history_minute_time_data` 按单个 `YYYYMMDD` 日期请求历史分时，通常返回当日最多 240 个 `price + vol` 点。实测标准行情服务器可返回远早于最近 800 天的历史分时，但非交易日、上市前日期或 server 未服务日期会返回空。
-
-#### A-share realtime quote fields
-
-`get_security_quotes` 返回的关键字段：
-
-| Field | Meaning |
-| --- | --- |
-| `market`, `code` | 市场和证券代码 |
-| `price` | 当前价 |
-| `last_close` | 昨收 |
-| `open`, `high`, `low` | 当日开高低 |
-| `servertime` | 行情服务器时间 |
-| `vol`, `cur_vol` | 总成交量、现量 |
-| `amount` | 成交额 |
-| `s_vol`, `b_vol` | 内外盘类字段 |
-| `bid1..bid5`, `ask1..ask5` | 五档买卖价 |
-| `bid_vol1..5`, `ask_vol1..5` | 五档买卖量 |
-| `reversed_bytes9` | pytdx 注释为涨速 |
-| `active1`, `active2`, `reversed_bytes*` | 未完全确认语义的协议字段 |
-
-#### Protocol notes
-
-`pytdx.hq` 标准行情协议要点：
-
-- 标准 HQ server 常用端口是 `7709`。
-- 连接后先发送 3 个 setup 包。
-- 实时快照请求支持批量证券，每个证券编码为 `market + 6 byte symbol`。
-- 响应先读取 16 字节 header，header 中包含压缩长度和解压长度。
-- 当压缩长度和解压长度不一致时，body 使用 zlib 解压。
-- 快照价格字段不是普通定长整数。很多字段使用 TDX 变长有符号整数编码。
-- `price` 是基准当前价，`last_close/open/high/low/bid/ask` 多数是相对 `price` 的差值。
-- A 股价格按整数分传输，最终价格通常是 `(base + diff) / 100.0`。
-
-`marketd` 已实现等价的 Go 能力：
-
-```bash
-go run ./cmd/marketd quote \
-  --symbol sh:600519 \
-  --symbol sz:000001 \
-  --server 180.153.18.170:7709
-```
-
-Current coverage:
-
-| pytdx capability | marketd status |
-| --- | --- |
-| `hq.get_security_quotes` for `sh` / `sz` | Implemented as `marketd quote` and `tdx.FetchRealtimeQuotes` |
-| zlib response handling | Implemented |
-| TDX variable integer price decoding | Implemented |
-| five-level depth | Implemented |
-| server probe / fallback | Implemented through `quote-probe`, `quote-bestip`, cached best-server selection, and multi-server quote retry |
-| heartbeat / long-lived reconnect | Not implemented |
-| `bj` realtime quotes | Implemented for verified quote requests |
-| `get_security_bars` / `get_index_bars` | Implemented as `marketd hq-bars` / `marketd hq-index-bars` |
-| `get_minute_time_data` / `get_history_minute_time_data` | Implemented as `marketd hq-minute` / `marketd hq-history-minute` |
-| `get_transaction_data` / `get_history_transaction_data` | Implemented as `marketd hq-transactions` / `marketd hq-history-transactions` |
-| `get_company_info_category` / `get_company_info_content` | Implemented as `marketd hq-company-categories` / `marketd hq-company-content` |
-| `get_xdxr_info` | Implemented as `marketd hq-xdxr` |
-| `get_finance_info` | Implemented as `marketd hq-finance` |
-| `get_block_info_meta` / `get_block_info` | Implemented as `marketd hq-block-meta` / `marketd hq-block` |
-
-### `pytdx.exhq` Extended行情
-
-`exhq` 使用扩展市场服务器，常见端口是 `7727`。它面向期货、期权、港股、外盘等市场，不是 A 股标准行情主路径。
-
-典型用法：
-
-```python
-from pytdx.exhq import TdxExHq_API
-
-api = TdxExHq_API()
-with api.connect("61.152.107.141", 7727):
-    rows = api.get_instrument_quote(47, "IF1709")
-```
-
-Core API surface:
-
-| API | Purpose |
-| --- | --- |
-| `get_markets` | 扩展市场列表 |
-| `get_instrument_count` | 品种数量 |
-| `get_instrument_info` | 品种列表/基础信息 |
-| `get_instrument_quote` | 扩展品种实时快照 |
-| `get_minute_time_data` | 分时 |
-| `get_history_minute_time_data` | 历史分时 |
-| `get_instrument_bars` | K 线 |
-| `get_transaction_data` | 分笔 |
-| `get_history_transaction_data` | 历史分笔 |
-
-`get_instrument_quote` 字段结构和 `hq.get_security_quotes` 相似，但价格字段是更直接的 `float32` 定长结构，市场代码也不是 `0/1` 的深沪市场。
-
-Key fields:
-
-| Field | Meaning |
-| --- | --- |
-| `market`, `code` | 扩展市场 ID 和合约/品种代码 |
-| `pre_close`, `open`, `high`, `low`, `price` | 昨收、开高低、当前价 |
-| `kaicang`, `chicang` | 开仓、持仓类字段 |
-| `zongliang`, `xianliang` | 总量、现量 |
-| `neipan`, `waipan` | 内盘、外盘 |
-| `bid1..bid5`, `ask1..ask5` | 五档买卖价 |
-| `bid_vol1..5`, `ask_vol1..5` | 五档买卖量 |
-
-`marketd` status: implemented as a separate on-demand read capability from A-share standard realtime quotes.
-
-Implemented:
-
-- `marketd exquote-markets` for `get_markets`.
-- `marketd exquote-count` for `get_instrument_count`.
-- `marketd exquote-instruments` for `get_instrument_info`.
-- `marketd exquote --market <id> --code <instrument>` for `get_instrument_quote`.
-- `marketd exquote-bars` for `get_instrument_bars`.
-- `marketd exquote-minute` for `get_minute_time_data`.
-- `marketd exquote-history-minute` for `get_history_minute_time_data`.
-- `marketd exquote-transactions` for `get_transaction_data`.
-- `marketd exquote-history-transactions` for `get_history_transaction_data`.
-- `marketd exquote-history-bars` for the pytdx historical K-line range parser.
-
-Not implemented:
-
-- ClickHouse persistence for ExHQ results;
-- authenticated Level-2 feeds;
-- ClickHouse persistence.
-
-### `pytdx.reader`
-
-`reader` 读取本地通达信数据文件和导出文件。
-
-Covered formats include:
-
-| Format | Purpose |
-| --- | --- |
-| `.day` | 日线 OHLCV，价格为整数分 |
-| `ex_daily` | 扩展市场日线 |
-| `.lc1`, `.lc5` | 1 分钟 / 5 分钟 float32 价格格式 |
-| `.1`, `.5` | 1 分钟 / 5 分钟整数分价格格式 |
-| `gbbq` | 股本变迁 |
-| `block` | 板块股票列表 |
-| `customblock` | 自定义板块 |
-| `history_financial` / `hf` | 历史专业财务文件 |
-
-CLI example from pytdx:
-
-```bash
-hqreader -o /tmp/daily.csv -d daily /path/to/vipdoc/sz/lday/sz000001.day
-```
-
-`marketd` current coverage:
-
-| pytdx reader format | marketd status |
-| --- | --- |
-| `.day` | Implemented |
-| `.lc1` | Implemented |
-| `.1` | Implemented |
-| `.lc5` | Implemented |
-| `.5` | Implemented |
-| block/customblock | Not implemented |
-| `gbbq` | Not implemented |
-| historical financial | Not implemented |
-
-### `pytdx.crawler`
-
-`pytdx.crawler` focuses on historical professional financial files:
-
-- list available financial files;
-- download `gpcw*.zip`;
-- parse `.zip` / `.dat` financial files;
-- export parsed data through `hqreader -d hf`.
-
-`marketd` status: not implemented.
-
-### `pytdx.trade`
-
-`pytdx.trade` does not provide native trading by itself. It wraps `trade.dll` through `TdxTradeServer` and exposes login, query, order, cancel, quote, and margin repayment APIs. The pytdx docs explicitly present it as a risk-bearing wrapper.
-
-The practical deployment shape is:
+`marketd` is not just a TDX client. It combines:
 
 ```text
-Python / Go / Node client
-  -> HTTP REST
-  -> TdxTradeServer
-  -> trade.dll
-  -> broker / TDX trading channel
+TDX protocol / local file decoders
+  -> ingest orchestration
+  -> ClickHouse fact/reference/ops tables
+  -> infinity query API and TDX provider API
+  -> quote service operational state
 ```
 
-`TdxTradeServer` is a C++ HTTP adapter around `trade.dll`. It loads the DLL in a Windows process and exposes the DLL-backed trading functions as HTTP endpoints. `pytdx.trade.TdxTradeApi` is the HTTP client side of that adapter, not a pure-Python trading protocol implementation.
-
-`trade.dll` should be treated as a Windows-only broker/TDX client component rather than a stable public cross-platform SDK:
-
-- it normally has to run inside a Windows process that can load the DLL;
-- a direct Go wrapper would also need to be Windows-only, with matching 32-bit / 64-bit architecture;
-- direct wrapping requires the real exported function names, calling convention, parameter layout, string encoding, struct packing, callback behavior, and memory ownership rules;
-- the DLL source, license, and broker compatibility are operational/security concerns, not market-data ingest concerns.
-
-`marketd` status: out of scope. `marketd` is a market data daemon, not a trading client.
-
-## mootdx
-
-`mootdx` is a higher-level wrapper around 通达信/TDX data access. Compared with `pytdx`, it is more DataFrame- and CLI-oriented, provides cleaner factories, frequency aliases, adjustment options, and convenience commands.
-
-### Package Layout
-
-| Module | Capability | Notes for marketd |
-| --- | --- | --- |
-| `mootdx.quotes` | Online quote/K-line/minute/F10/financial access | Higher-level reference for operator UX |
-| `mootdx.reader` | Local TDX directory/file reader | Useful for path conventions and exported formats |
-| `mootdx.affair` | Financial file list/download/parse | Possible future financial-data capability |
-| CLI | `quotes`, `reader`, `affair`, `bestip` | Useful model for commands and server selection |
-
-### `mootdx.quotes`
-
-Typical usage:
-
-```python
-from mootdx.quotes import Quotes
-
-client = Quotes.factory(market="std", multithread=True, heartbeat=True)
-client.quotes(symbol=["600519", "000001"])
-client.bars(symbol="600519", frequency=9, offset=10)
-```
-
-`mootdx.quotes.StdQuotes.bars` 默认 `offset=800`，并会把大于 800 的 offset 截断为 800，然后调用底层 `get_security_bars`。这是对 TDX 单次 K 线请求页大小的保护；要获取更久历史，应调整 `start` 分页，而不是增大 `offset`。
-
-Main capabilities:
-
-| Capability | Purpose |
-| --- | --- |
-| `Quotes.factory(market="std")` | 标准市场客户端，主要用于沪深 A 股 |
-| `Quotes.factory(market="ext")` | 扩展市场客户端 |
-| realtime quotes | 实时行情快照 |
-| `bars` / `k` / `ohlc` | K 线查询 |
-| `index` | 指数 K 线 |
-| `minute` / historical minute | 分时 |
-| transaction records | 分笔 |
-| company info | F10/公司信息 |
-| xdxr | 除权除息 |
-| finance info | 财务信息 |
-| `bestip` option | 自动选择较快 TDX server |
-
-Frequency aliases and adjustment support are a major convenience layer:
-
-| mootdx concept | Meaning |
-| --- | --- |
-| `1m`, `5m`, `15m`, `30m`, `1h` | intraday K-line frequencies |
-| `day`, `week`, `mon`, `3mon`, `year` | daily and larger periods |
-| `adjust="qfq"` | 前复权 |
-| `adjust="hfq"` | 后复权 |
-
-`marketd` status:
-
-| mootdx quotes feature | marketd status |
-| --- | --- |
-| standard A-share realtime quote | Implemented through `marketd quote` |
-| server bestip selection | Implemented through `marketd quote-bestip` cache refresh and `quote --bestip` / `quote-sweep --bestip` |
-| online K-line | Implemented through `marketd hq-bars` / `hq-index-bars` |
-| online minute/time sharing | Implemented through `marketd hq-minute` / `hq-history-minute` |
-| online transaction records | Implemented through `marketd hq-transactions` / `hq-history-transactions` |
-| qfq/hfq adjustment | Not implemented |
-| F10/company/finance online data | Implemented through `marketd hq-company-*`, `hq-xdxr`, and `hq-finance` |
-| block online data | Implemented through `marketd hq-block-meta` / `hq-block` |
-| extended market quote | Implemented through `marketd exquote` and `exquote-*` read commands |
-
-### `mootdx.reader`
-
-Typical usage:
-
-```python
-from mootdx.reader import Reader
-
-reader = Reader.factory(market="std", tdxdir="C:/new_tdx")
-reader.daily(symbol="600036")
-reader.minute(symbol="600036")
-reader.fzline(symbol="600036")
-```
-
-Main capabilities:
-
-| Capability | Purpose |
-| --- | --- |
-| `Reader.factory(market="std", tdxdir=...)` | 读取标准市场本地 TDX 目录 |
-| `daily` | 日线 |
-| `minute` | 1m/5m 分钟 K 线 |
-| `fzline` | 分时线 |
-| extended daily | 扩展市场日线 |
-| block/custom block | 普通板块、自定义板块 |
-| custom block write | 写入自定义板块 |
-
-`marketd` status:
-
-| mootdx reader feature | marketd status |
-| --- | --- |
-| daily `.day` import | Implemented |
-| 1m/5m import | Implemented |
-| fzline | Not implemented |
-| block/custom block | Not implemented |
-| custom block write | Not implemented |
-
-### `mootdx.affair`
-
-`Affair` handles professional financial files:
-
-```python
-from mootdx.affair import Affair
-
-files = Affair.files()
-Affair.fetch(downdir="tmp", filename="gpcw19960630.zip")
-Affair.parse(downdir="tmp")
-```
-
-Main capabilities:
-
-| Capability | Purpose |
-| --- | --- |
-| list files | 获取远程财务文件列表 |
-| fetch file | 下载单个 `gpcw*.zip` |
-| fetch all | 批量下载 |
-| parse | 解析财务文件 |
-| export | 保存 CSV / Excel 等 |
-
-`marketd` status: not implemented.
-
-### mootdx CLI
-
-Common commands:
-
-| Command | Purpose |
-| --- | --- |
-| `mootdx quotes` | 在线行情/K 线导出 |
-| `mootdx reader` | 本地 TDX 文件读取和导出 |
-| `mootdx affair` | 财务文件下载/解析 |
-| `mootdx bestip` | 测速并选择 TDX server |
-
-CLI output commonly supports CSV, JSON, Excel, HDF5, depending on command and options.
-
-## pytdx vs mootdx
-
-| Dimension | pytdx | mootdx |
-| --- | --- | --- |
-| Primary role | Lower-level TDX protocol implementation | Higher-level convenience wrapper |
-| API style | Closer to raw TDX calls | Factory-based, DataFrame-oriented |
-| Realtime A-share quote | `TdxHq_API.get_security_quotes` | `Quotes.factory("std").quotes(...)` |
-| Extended market | `TdxExHq_API` | `Quotes.factory("ext")` |
-| Local reader | `pytdx.reader` and `hqreader` | `Reader.factory(...)` |
-| Financial data | `pytdx.crawler` | `Affair` |
-| Adjustment | Mostly caller-managed | qfq/hfq convenience options |
-| Server selection | Host lists and optional connection management | CLI/API convenience around bestip |
-| Best use as reference | Protocol details and parsers | Product shape, CLI UX, data workflow |
-
-## Replacement Priorities for marketd
+The strongest part of `marketd` is the data plane and operational contract. External libraries are stronger in ad-hoc SDK convenience and some online ranking/board APIs.
 
 ### Implemented
 
-- Local `.day` daily bars.
-- Local `.lc1` / `.1` 1-minute bars.
-- Local `.lc5` / `.5` 5-minute bars.
-- ClickHouse bootstrap and imports for canonical OHLCV facts.
-- Standard A-share realtime quote snapshots for `sh` / `sz` / verified `bj`.
-- Standard HQ online K-line, minute-time, transaction, company/F10, xdxr, finance, and block reads.
-- Extended market list, instrument catalog, single instrument quote, K-line, minute-time, transaction, and history reads through TDX `exhq`.
+| Area | Current marketd coverage |
+| --- | --- |
+| Local OHLCV files | `.day`, `.lc1`, `.1`, `.lc5`, `.5` parse/import into canonical ClickHouse bars |
+| Offline package import | `import-tdx-vipdoc-zip` for local vipdoc minute packages |
+| Client-local reference data | `gbbq`, system block, custom block, custom block write, extended-market daily bars |
+| Standard HQ quote | realtime snapshots for `sh` / `sz` / verified `bj`, five-level depth, zlib response handling, TDX variable integer price decoding |
+| Standard HQ data APIs | security list/count, K-line, index K-line, minute-time, history minute-time, transaction, history transaction, F10/company, XDXR, finance summary, block meta/content |
+| Extended ExHQ data APIs | markets, instrument count/list, quote, K-line, minute-time, history minute-time, transaction, history transaction, history bars |
+| Reliability | server probe, bestip cache, multi-server retry, quote sweep, long-running quote service with pools, heartbeat-before-reuse, rate limiting, retry/backoff, durable run/batch state |
+| Product query API | `/api/v1/bars`, `/api/v1/intraday-points`, `/api/v1/resolve-symbol`, `/api/v1/health` |
+| Live provider API | `/api/tdx/hq/...` and `/api/tdx/exhq/...`, isolated from `/api/v1` and not implicitly persisted |
+| Adjustment | XDXR refresh, factor refresh, and `adjust=none/qfq/hfq` bars query when factors are precomputed |
+| Financial packages | local `tdxfin.zip` / `tdxgp.zip` parse/import plus remote `gpcw` `tdx-fin-files` / `tdx-fin-fetch` / `tdx-fin-parse` workflow |
 
-### High-value next candidates
+### Financial Package Status
+
+The financial package workflow is now split deliberately:
+
+- `import-tdx-fin` imports local `tdxfin.zip` or a fetched single `gpcwYYYYMMDD.zip` package.
+- `import-tdx-gp` imports local `tdxgp.zip`.
+- `tdx-fin-files` lists remote `gpcwYYYYMMDD.zip` packages from `gpcw.txt`.
+- `tdx-fin-fetch` downloads selected or all remote `gpcw` packages with size/MD5 verification.
+- `tdx-fin-parse` validates a fetched `gpcw` package without opening ClickHouse.
+
+This covers the `pytdx.crawler` / `mootdx.affair` financial file workflow while keeping database writes explicit.
+
+## pytdx
+
+`pytdx` is the lower-level Python TDX protocol reference. The GitHub project is archived; use it as protocol documentation and historical implementation reference, not as an actively maintained upstream.
+
+### Package Layout
+
+| Module | Capability | Notes for marketd |
+| --- | --- | --- |
+| `pytdx.hq` | Standard HQ protocol: A-share quotes, bars, minute, transactions, F10, XDXR, finance, block | Main protocol reference for standard A-share online data |
+| `pytdx.exhq` | Extended quote protocol for futures/options/HK/external markets | Reference for ExHQ packet shapes |
+| `pytdx.reader` | Local TDX file reader | Reference for `.day`, minute files, block, gbbq, historical financial files |
+| `pytdx.crawler` | Historical professional financial file list/download/parse | Reference for `tdxfin` / `gpcw` workflows |
+| `pytdx.pool` | Connection pool/failover helpers | Operational ideas only |
+| `pytdx.trade` | HTTP wrapper around Windows `trade.dll` via `TdxTradeServer` | Out of scope for `marketd` |
+
+### Standard HQ Coverage
+
+| pytdx capability | marketd status |
+| --- | --- |
+| `get_security_quotes` | Implemented as `marketd quote`, `/api/tdx/hq/quotes`, and `tdx.FetchRealtimeQuotes` |
+| `get_security_count` / `get_security_list` | Implemented and used by quote sweep / quote service discovery |
+| `get_security_bars` / `get_index_bars` | Implemented as `hq-bars` / `hq-index-bars` and provider API |
+| `get_minute_time_data` / `get_history_minute_time_data` | Implemented |
+| `get_transaction_data` / `get_history_transaction_data` | Implemented |
+| `get_company_info_category` / `get_company_info_content` | Implemented |
+| `get_xdxr_info` | Implemented; can be persisted through `refresh-tdx-xdxr` |
+| `get_finance_info` | Implemented as online finance summary |
+| `get_block_info_meta` / `get_block_info` | Implemented as online block reads |
+| heartbeat / auto-retry | Covered at `quotesvc` operational layer, not copied as pytdx API shape |
+
+`get_security_bars` / `get_index_bars` have an 800-row page limit. Longer online history should page by `start=0,800,1600,...`.
+
+### ExHQ Coverage
+
+| pytdx ExHQ capability | marketd status |
+| --- | --- |
+| `get_markets` | Implemented as `exquote-markets` and `/api/tdx/exhq/markets` |
+| `get_instrument_count` | Implemented |
+| `get_instrument_info` | Implemented |
+| `get_instrument_quote` | Implemented |
+| `get_instrument_bars` | Implemented |
+| `get_minute_time_data` / `get_history_minute_time_data` | Implemented |
+| `get_transaction_data` / `get_history_transaction_data` | Implemented |
+| history bars range parser | Implemented as `exquote-history-bars` |
+
+ExHQ live reads are on-demand provider reads. They are not implicitly persisted to canonical market fact tables.
+
+### Reader / Crawler Coverage
+
+| pytdx reader/crawler format | marketd status |
+| --- | --- |
+| `.day` | Implemented and persisted |
+| `.lc1` / `.1` | Implemented and persisted |
+| `.lc5` / `.5` | Implemented and persisted |
+| `ex_daily` | Implemented as `import-tdx-ex-daily` |
+| `gbbq` | Implemented as `import-tdx-gbbq` |
+| block / custom block | Implemented as local block import and custom block write |
+| `history_financial` / `gpcw` | Implemented as local import and parse-only validation |
+| remote financial file download | Implemented as `tdx-fin-files` / `tdx-fin-fetch` / `tdx-fin-parse` |
+
+## mootdx
+
+`mootdx` is a higher-level DataFrame and CLI wrapper around TDX access. Compared with `pytdx`, it is less useful as raw protocol reference but more useful as a product/UX reference.
+
+### Main Capabilities
+
+| mootdx area | Capability | marketd comparison |
+| --- | --- | --- |
+| `mootdx.quotes` | `Quotes.factory("std")`, quotes, bars, index, minute, transactions, F10, XDXR, finance, block | Protocol coverage mostly implemented in `marketd`; `marketd` returns JSON/ClickHouse-backed results rather than pandas |
+| `mootdx.reader` | Local TDX daily/minute/fzline/block/custom block readers | Daily/minute/block/custom block mostly covered; local fzline remains a distinct candidate |
+| `mootdx.affair` | Financial file list/fetch/parse/export | `marketd` now covers files/fetch/parse for remote `gpcw` packages; export remains out of scope |
+| `mootdx bestip` | Server speed test and config | `marketd quote-bestip` and bestip cache cover this |
+| adjustment helpers | `adjust="qfq"` / `adjust="hfq"` convenience | `marketd` uses explicit XDXR/factor refresh plus query-time join; more auditable, less convenient |
+| CLI output | CSV/JSON/Excel/HDF5-style export convenience | `marketd` is oriented around JSON, ClickHouse, and HTTP APIs |
+
+### Practical Gap
+
+The real mootdx gap is not raw protocol coverage. It is ad-hoc analyst ergonomics:
+
+- no DataFrame-native API;
+- no one-command CSV/Excel export equivalent;
+- no "fetch adjusted bars right now" convenience path.
+
+Those are useful only if `marketd` should become a notebook/CLI exploration tool. For the current daemon/data-plane goal, they are secondary.
+
+## mirrowall/gotdx
+
+`mirrowall/gotdx` is a small early Go implementation. It has connection scaffolding and only a narrow standard-HQ surface:
+
+| gotdx capability | marketd comparison |
+| --- | --- |
+| Connect to HQ server | Implemented with stronger session handling |
+| `GetStockCount` | Implemented |
+| `GetStockList` | Implemented; marketd decodes names and uses list discovery for sweeps |
+| Quote/K-line/minute/F10/XDXR/finance/ExHQ/local files | Not materially covered by gotdx; marketd is far ahead |
+
+`gotdx` is no longer a meaningful feature target. Keep it only as a historical Go protocol reference.
+
+## millken/tdx
+
+`millken/tdx` is the Go project most worth tracking. It is a richer online TDX SDK than `mirrowall/gotdx`.
+
+### Capabilities Worth Comparing
+
+| millken/tdx capability | marketd status |
+| --- | --- |
+| `Dial`, `DialSP`, `DialEx`, `DialBest`, host probes/cache | `marketd` has HQ/Ex sessions, probe, bestip cache, and quote-service pools; SP-specific mode is not a general public API |
+| `GetTick` / `GetTicks` | `marketd quote` covers realtime snapshot with five-level depth |
+| `GetBatchQuotes` | `marketd` batches quote requests, but does not expose this compact API shape separately |
+| `GetMarketCodes` | `marketd` has HQ security list/count |
+| `GetKline` | `marketd hq-bars` / provider API cover standard HQ bars |
+| `GetFundKline` | Not implemented as a fund-specialized API; ExHQ generic bars exist |
+| `GetTickChart` | Covered conceptually by HQ minute-time / intraday points, but not same API shape |
+| `GetTransaction` / `GetHistoryTrade` | Implemented as HQ transactions/history transactions |
+| `GetCompanyCategory` / `GetCompanyContent` | Implemented |
+| `GetFinance` | Implemented as HQ finance summary |
+| `GetXdXr` | Implemented and persistable |
+| `GetQuotesList` | Not implemented; high-value candidate for sorted market scans/rankings |
+| `GetTopBoard` | Not implemented; high-value candidate for 涨跌幅/量比/换手等榜单 |
+| `GetBoardMembers` | Not implemented as SP live board-member API; local and HQ block support exist |
+| `GetFundDetail` | Not implemented |
+| `GetLHB` | Not implemented; could be derived from F10 content parsing |
+| SDK pool | `marketd` quote service has stronger durable orchestration; `millken/tdx` has simpler SDK pooling |
+
+### What millken/tdx Adds Beyond marketd
+
+The important gaps are online convenience endpoints:
+
+- sorted quote lists (`GetQuotesList`);
+- top boards / rankings (`GetTopBoard`);
+- SP board member query with rich bitmap fields (`GetBoardMembers`);
+- fund-specific detail/K-line protocols (`GetFundDetail`, `GetFundKline`);
+- LHB parsing from F10 text (`GetLHB`).
+
+These are not storage fundamentals. They are candidates for a future `/api/tdx/hq/...` or `/api/tdx/sp/...` provider API expansion.
+
+## Capability Matrix
+
+| Dimension | pytdx | mootdx | mirrowall/gotdx | millken/tdx | marketd |
+| --- | --- | --- | --- | --- | --- |
+| Standard realtime quote | Yes | Yes | No meaningful coverage | Yes | Yes |
+| Standard K-line/minute/transaction | Yes | Yes | No | Yes | Yes |
+| Security list/count | Yes | Yes | Yes | Yes | Yes |
+| F10/company | Yes | Yes | No | Yes | Yes |
+| XDXR | Yes | Yes | No | Yes | Yes |
+| Finance summary | Yes | Yes | No | Yes | Yes |
+| ExHQ generic quote/bars/minute/transactions | Yes | Partial/wrapper | No | Partial/fund-oriented | Yes |
+| Local `.day` / minute reader | Yes | Yes | No | No | Yes, persisted |
+| Local block/custom block | Yes | Yes | No | No | Yes, persisted/write custom |
+| Local `gbbq` | Yes | Reader-level | No | No | Yes, persisted |
+| Professional financial package parse | Yes | Yes | No | No | Yes |
+| Professional financial package download | Yes | Yes | No | No | Yes, for remote `gpcw` packages |
+| qfq/hfq convenience | Caller-managed | Yes | No | No | Yes after explicit factor refresh |
+| Sorted quote lists / ranking boards | No main focus | Some convenience | No | Yes | Not implemented |
+| Fund detail / fund-specific K-line | No main focus | Ex wrapper | No | Yes | Not implemented as specialized API |
+| Dragon-tiger list parsing | No main focus | No main focus | No | Yes | Not implemented |
+| Trading wrapper | Yes, via `trade.dll` adapter | No main focus | No | No | Out of scope |
+| ClickHouse persistence | No | No | No | No | Yes |
+| Task runs / watermarks / quality issues | No | No | No | No | Yes |
+| Stable HTTP query API | No | No | No | No | Yes |
+| Durable quote sweep service | No | No | No | No | Yes |
+
+## Replacement Priorities for marketd
+
+### Finish First
+
+| Candidate | Reason |
+| --- | --- |
+| Archive completed financial changes after validation | The local import and remote `gpcw` workflow now have separate OpenSpec changes |
+| Restore `go test ./...` if unrelated failures appear | Avoid confusing planned capability with delivered capability |
+| Keep financial wide tables explicit | Raw financial facts are imported; derived/wide views should remain separate refresh jobs |
+
+### High-Value Protocol Candidates
 
 | Candidate | Source analogue | Reason |
 | --- | --- | --- |
-| TDX server bestip selection | `mootdx bestip` | Improves realtime quote reliability |
-| Online security list | `pytdx.hq.get_security_list` | Useful for full-market realtime sweeps |
-| 分时线 local/import | `mootdx.reader.fzline` | Distinct from OHLCV minute bars |
-| Block/custom block reading | `pytdx.reader`, `mootdx.reader` | Useful for sector/index membership workflows |
-| Financial file download/parse | `pytdx.crawler`, `mootdx.affair` | Builds fundamental data plane |
+| Sorted quote list / market scanner | `millken/tdx.GetQuotesList` | Useful for full-market scan views without first collecting all symbols |
+| Top boards | `millken/tdx.GetTopBoard` | Direct support for 涨幅、跌幅、振幅、量比、换手等榜单 |
+| SP board members | `millken/tdx.GetBoardMembers` | Rich live board membership/metrics beyond local static block files |
+| Fund detail / fund K-line | `millken/tdx.GetFundDetail`, `GetFundKline` | Useful if funds become first-class assets |
+| LHB parsing | `millken/tdx.GetLHB` | Can reuse existing F10 content fetch and add a parser |
+| Local fzline import | `mootdx.reader.fzline` | Distinct from OHLCV minute bars and may support intraday chart workflows |
 
-### Keep out of scope
+### Keep Out of Scope
 
 - `pytdx.trade` / `trade.dll` trading operations.
+- Authenticated Level-2 feeds unless there is a separate credential and storage contract.
+- Implicit persistence from `/api/tdx/*` live provider reads.
 - Automatic destructive schema replacement.
-- Storing cross-row derived metrics in canonical fact tables.
-
-## Current marketd realtime quote contract
-
-Command:
-
-```bash
-go run ./cmd/marketd quote \
-  --symbol sh:600519 \
-  --symbol sz:000001 \
-  --server 180.153.18.170:7709
-```
-
-JSON fields:
-
-| Field | Meaning |
-| --- | --- |
-| `market`, `symbol` | `sh` / `sz` and six-digit code |
-| `price`, `last_close`, `open`, `high`, `low` | Decimal prices |
-| `server_time` | TDX server quote time |
-| `volume`, `current_volume`, `amount` | Volume and turnover fields |
-| `sell_volume`, `buy_volume` | Sell/buy volume fields from TDX payload |
-| `bids`, `asks` | Five price/volume levels |
-
-Validation:
-
-- Supports `sh` and `sz`.
-- Rejects `bj` in the current implementation.
-- Accepts `--symbol sh:600519`, `--symbol sz:000001`, or inferred `--symbol 600519`.
-- Uses `--server host:port` for TDX HQ server override.
+- Adding cross-row derived metrics to canonical fact tables.
