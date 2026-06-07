@@ -37,7 +37,6 @@ The system SHALL store A-share OHLCV bars as canonical facts without source, ver
 - **AND** it stores market, symbol, trade_date, open, high, low, close, volume, and amount
 - **AND** it MUST NOT store `pct_chg`
 - **AND** it uses `ReplacingMergeTree`
-- **AND** it partitions by `toYear(trade_date)`
 - **AND** it orders by `(market, symbol, trade_date)`
 
 #### Scenario: One-minute table contract
@@ -45,7 +44,6 @@ The system SHALL store A-share OHLCV bars as canonical facts without source, ver
 - **THEN** `infinity_market.a_share_bars_1m` exists
 - **AND** it stores market, symbol, bar_time, trade_date, open, high, low, close, volume, and amount
 - **AND** it uses `ReplacingMergeTree`
-- **AND** it partitions by `toYYYYMM(trade_date)`
 - **AND** it orders by `(market, symbol, bar_time)`
 
 #### Scenario: Five-minute table contract
@@ -53,7 +51,6 @@ The system SHALL store A-share OHLCV bars as canonical facts without source, ver
 - **THEN** `infinity_market.a_share_bars_5m` exists
 - **AND** it stores market, symbol, bar_time, trade_date, open, high, low, close, volume, and amount
 - **AND** it uses `ReplacingMergeTree`
-- **AND** it partitions by `toYYYYMM(trade_date)`
 - **AND** it orders by `(market, symbol, bar_time)`
 
 #### Scenario: No source or version columns in facts
@@ -268,4 +265,63 @@ The system SHALL bootstrap a ClickHouse table for client-local TDX extension-mar
 - **AND** it partitions by `toYear(trade_date)`
 - **AND** it orders by `(ex_market, code, trade_date)`
 - **AND** it MUST NOT include source, source_file, version, or updated_at columns
+
+### Requirement: Daily derived metrics table
+The system SHALL store reusable daily derived metrics outside canonical OHLCV fact tables.
+
+#### Scenario: Derived table contract
+- **WHEN** bootstrap completes
+- **THEN** `infinity_market.a_share_daily_derived` exists
+- **AND** it stores market, symbol, trade_date, prev_close, pct_chg, and computed_at
+- **AND** `prev_close` and `pct_chg` are nullable
+- **AND** it orders by `(trade_date, market, symbol)`
+
+#### Scenario: Percentage change calculation
+- **WHEN** daily derived metrics are refreshed
+- **THEN** `prev_close` is the previous valid close for the same market and symbol
+- **AND** `pct_chg` is `(close - prev_close) / prev_close * 100`
+- **AND** `pct_chg` is `NULL` when `prev_close` is missing or non-positive
+
+#### Scenario: Rebuildable derived data
+- **WHEN** historical daily facts are backfilled or corrected
+- **THEN** an operator can refresh affected daily derived metrics
+- **AND** refreshed derived rows replace stale derived values for the same market, symbol, and trade_date
+
+### Requirement: Minute scan-derived tables
+The system SHALL support optional short-retention scan tables for full-market minute scans without changing canonical minute fact table order keys.
+
+#### Scenario: One-minute scan table contract
+- **WHEN** scan table bootstrap is implemented
+- **THEN** `infinity_market.a_share_bars_1m_scan` exists
+- **AND** it stores trade_date, bar_time, market, symbol, close, volume, amount, selected nullable derived metrics, and computed_at
+- **AND** it partitions by `toYYYYMM(trade_date)`
+- **AND** it orders by `(trade_date, bar_time, market, symbol)`
+- **AND** it is rebuildable from `infinity_market.a_share_bars_1m`
+
+#### Scenario: Five-minute scan table contract
+- **WHEN** scan table bootstrap is implemented
+- **THEN** `infinity_market.a_share_bars_5m_scan` exists
+- **AND** it stores trade_date, bar_time, market, symbol, close, volume, amount, selected nullable derived metrics, and computed_at
+- **AND** it partitions by `toYYYYMM(trade_date)`
+- **AND** it orders by `(trade_date, bar_time, market, symbol)`
+- **AND** it is rebuildable from `infinity_market.a_share_bars_5m`
+
+#### Scenario: Scan table retention
+- **WHEN** scan tables are created
+- **THEN** they are treated as short-retention derived data
+- **AND** operators can delete expired scan partitions without deleting canonical minute facts
+- **AND** expired scan data can be rebuilt from canonical minute facts when needed
+
+### Requirement: Explicit minute scan refresh
+The system SHALL generate minute scan data only through explicit refresh operations.
+
+#### Scenario: Refresh one-minute scan data
+- **WHEN** an operator runs the scan refresh for period `1m` and a date range
+- **THEN** marketd rebuilds scan rows from `a_share_bars_1m` for that range
+- **AND** refreshed rows replace stale rows for the same market, symbol, and bar_time
+
+#### Scenario: Refresh five-minute scan data
+- **WHEN** an operator runs the scan refresh for period `5m` and a date range
+- **THEN** marketd rebuilds scan rows from `a_share_bars_5m` for that range
+- **AND** refreshed rows replace stale rows for the same market, symbol, and bar_time
 

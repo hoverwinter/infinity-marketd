@@ -46,17 +46,7 @@ The system SHALL parse local TDX `.day` files and import daily OHLCV bars.
 - **AND** it supports optional `--market`, `--since`, `--until`, and `--dry-run`
 
 ### Requirement: Local 1-minute import
-The system SHALL parse local TDX `.lc1` and `.1` files and import 1-minute OHLCV bars.
-
-#### Scenario: LC1 record decoding
-- **WHEN** marketd parses a `.lc1` file
-- **THEN** it reads 32-byte little-endian records using `<HHfffffII`
-- **AND** it decodes packed date, minute-of-day, float OHLC, amount, volume, and reserved
-
-#### Scenario: Compatible `.1` record decoding
-- **WHEN** marketd parses a `.1` file
-- **THEN** it reads 32-byte little-endian records using `<HHIIIIfII`
-- **AND** it decodes packed date, minute-of-day, integer-cent OHLC, amount, volume, and reserved
+The system SHALL parse local TDX `.lc1` and `.1` files and import 1-minute OHLCV bars into canonical facts only.
 
 #### Scenario: One-minute normalization
 - **WHEN** a valid 1-minute record is normalized
@@ -65,25 +55,10 @@ The system SHALL parse local TDX `.lc1` and `.1` files and import 1-minute OHLCV
 - **AND** `.1` prices are divided by `100.0`
 - **AND** the record is mapped to `infinity_market.a_share_bars_1m`
 - **AND** the logical key is `(market, symbol, bar_time)`
-
-#### Scenario: One-minute command
-- **WHEN** an operator runs `marketd import-tdx-1m`
-- **THEN** the command supports an explicit `--file`
-- **AND** it supports `--root` plus `--code`
-- **AND** it supports optional `--market`, `--since`, `--until`, and `--dry-run`
+- **AND** offline import MUST NOT generate rows in `a_share_bars_1m_scan` by default
 
 ### Requirement: Local 5-minute import
-The system SHALL parse local TDX `.lc5` and `.5` files and import 5-minute OHLCV bars.
-
-#### Scenario: LC5 record decoding
-- **WHEN** marketd parses a `.lc5` file
-- **THEN** it reads 32-byte little-endian records using `<HHfffffII`
-- **AND** it decodes packed date, minute-of-day, float OHLC, amount, volume, and reserved
-
-#### Scenario: Compatible `.5` record decoding
-- **WHEN** marketd parses a `.5` file
-- **THEN** it reads 32-byte little-endian records using `<HHIIIIfII`
-- **AND** it decodes packed date, minute-of-day, integer-cent OHLC, amount, volume, and reserved
+The system SHALL parse local TDX `.lc5` and `.5` files and import 5-minute OHLCV bars into canonical facts only.
 
 #### Scenario: Five-minute normalization
 - **WHEN** a valid 5-minute record is normalized
@@ -92,12 +67,7 @@ The system SHALL parse local TDX `.lc5` and `.5` files and import 5-minute OHLCV
 - **AND** `.5` prices are divided by `100.0`
 - **AND** the record is mapped to `infinity_market.a_share_bars_5m`
 - **AND** the logical key is `(market, symbol, bar_time)`
-
-#### Scenario: Five-minute command
-- **WHEN** an operator runs `marketd import-tdx-5m`
-- **THEN** the command supports an explicit `--file`
-- **AND** it supports `--root` plus `--code`
-- **AND** it supports optional `--market`, `--since`, `--until`, and `--dry-run`
+- **AND** offline import MUST NOT generate rows in `a_share_bars_5m_scan` by default
 
 ### Requirement: Quality handling for local imports
 The system SHALL record parse and import quality issues without requiring shell log access.
