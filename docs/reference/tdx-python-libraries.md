@@ -254,6 +254,25 @@ hqreader -o /tmp/daily.csv -d daily /path/to/vipdoc/sz/lday/sz000001.day
 
 `pytdx.trade` does not provide native trading by itself. It wraps `trade.dll` through `TdxTradeServer` and exposes login, query, order, cancel, quote, and margin repayment APIs. The pytdx docs explicitly present it as a risk-bearing wrapper.
 
+The practical deployment shape is:
+
+```text
+Python / Go / Node client
+  -> HTTP REST
+  -> TdxTradeServer
+  -> trade.dll
+  -> broker / TDX trading channel
+```
+
+`TdxTradeServer` is a C++ HTTP adapter around `trade.dll`. It loads the DLL in a Windows process and exposes the DLL-backed trading functions as HTTP endpoints. `pytdx.trade.TdxTradeApi` is the HTTP client side of that adapter, not a pure-Python trading protocol implementation.
+
+`trade.dll` should be treated as a Windows-only broker/TDX client component rather than a stable public cross-platform SDK:
+
+- it normally has to run inside a Windows process that can load the DLL;
+- a direct Go wrapper would also need to be Windows-only, with matching 32-bit / 64-bit architecture;
+- direct wrapping requires the real exported function names, calling convention, parameter layout, string encoding, struct packing, callback behavior, and memory ownership rules;
+- the DLL source, license, and broker compatibility are operational/security concerns, not market-data ingest concerns.
+
 `marketd` status: out of scope. `marketd` is a market data daemon, not a trading client.
 
 ## mootdx
