@@ -97,6 +97,69 @@ func TestRefreshMinuteScanCommandRejectsInvalidPeriodBeforeConfig(t *testing.T) 
 	}
 }
 
+func TestQuoteProbeUsesConfiguredHQServers(t *testing.T) {
+	path := writeTDXServerConfig(t, []string{"hq1:7709", "hq2:7709"}, []string{"ex1:7727"})
+	original := probeHQServers
+	defer func() { probeHQServers = original }()
+	var got []string
+	probeHQServers = func(_ context.Context, servers []string, _ tdx.QuoteClientOptions) []tdx.ServerProbeResult {
+		got = append([]string(nil), servers...)
+		return []tdx.ServerProbeResult{{Server: servers[0], Success: true}}
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"quote-probe", "--config", path}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if strings.Join(got, ",") != "hq1:7709,hq2:7709" {
+		t.Fatalf("servers=%#v", got)
+	}
+}
+
+func TestQuoteProbeExplicitServerOverridesConfiguredHQServers(t *testing.T) {
+	path := writeTDXServerConfig(t, []string{"hq1:7709"}, []string{"ex1:7727"})
+	original := probeHQServers
+	defer func() { probeHQServers = original }()
+	var got []string
+	probeHQServers = func(_ context.Context, servers []string, _ tdx.QuoteClientOptions) []tdx.ServerProbeResult {
+		got = append([]string(nil), servers...)
+		return []tdx.ServerProbeResult{{Server: servers[0], Success: true}}
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"quote-probe", "--config", path, "--server", "explicit:7709"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if strings.Join(got, ",") != "explicit:7709" {
+		t.Fatalf("servers=%#v", got)
+	}
+}
+
+func TestExQuoteCountUsesConfiguredExHQServers(t *testing.T) {
+	path := writeTDXServerConfig(t, []string{"hq1:7709"}, []string{"ex1:7727", "ex2:7727"})
+	original := fetchExInstrumentCount
+	defer func() { fetchExInstrumentCount = original }()
+	var got []string
+	fetchExInstrumentCount = func(_ context.Context, opts tdx.ExQuoteClientOptions) (int, error) {
+		got = append([]string(nil), opts.Servers...)
+		return 2, nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"exquote-count", "--config", path}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if strings.Join(got, ",") != "ex1:7727,ex2:7727" {
+		t.Fatalf("servers=%#v", got)
+	}
+}
+
 func TestImportDayRootDryRunWithoutCode(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "vipdoc", "sh", "lday", "sh600519.day"), dailyRecord())
@@ -1118,6 +1181,25 @@ func writeFile(t *testing.T, path string, data []byte) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeTDXServerConfig(t *testing.T, hqServers []string, exHQServers []string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	var b strings.Builder
+	b.WriteString("tdx:\n")
+	b.WriteString("  hq_servers:\n")
+	for _, server := range hqServers {
+		fmt.Fprintf(&b, "    - %q\n", server)
+	}
+	b.WriteString("  exhq_servers:\n")
+	for _, server := range exHQServers {
+		fmt.Fprintf(&b, "    - %q\n", server)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func readTestFile(t *testing.T, path string) []byte {

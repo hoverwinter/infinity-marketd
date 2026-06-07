@@ -221,13 +221,41 @@ func applyBestIPFlags(opts *tdx.QuoteClientOptions, flags bestIPFlags) {
 	opts.BestIPRefresh = flags.Refresh
 }
 
+func registerConfigPathFlag(fs *flag.FlagSet, overrides *config.Overrides) {
+	fs.StringVar(&overrides.ConfigPath, "config", "", "config file path")
+}
+
+func configuredHQServers(explicit []string, overrides config.Overrides) ([]string, error) {
+	if len(explicit) > 0 || overrides.ConfigPath == "" {
+		return explicit, nil
+	}
+	cfg, err := config.Load(overrides)
+	if err != nil {
+		return nil, err
+	}
+	return append([]string(nil), cfg.TDX.HQServers...), nil
+}
+
+func configuredExHQServers(explicit []string, overrides config.Overrides) ([]string, error) {
+	if len(explicit) > 0 || overrides.ConfigPath == "" {
+		return explicit, nil
+	}
+	cfg, err := config.Load(overrides)
+	if err != nil {
+		return nil, err
+	}
+	return append([]string(nil), cfg.TDX.ExHQServers...), nil
+}
+
 func runQuote(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var symbols symbolFlags
 	var servers listFlags
 	var bestIP bestIPFlags
 	var batchSize int
 	var tradeDateText string
 	fs := newFlagSet("quote", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.Var(&symbols, "symbol", "symbol to quote; repeat or comma-separate, accepts code or market:code")
 	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
 	registerBestIPFlags(fs, &bestIP)
@@ -249,7 +277,12 @@ func runQuote(ctx context.Context, args []string, stdout io.Writer, stderr io.Wr
 		}
 		requests = append(requests, req)
 	}
-	clientOpts, err := quoteClientOptions([]string(servers), batchSize, tradeDateText, bestIP)
+	serverList, err := configuredHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	clientOpts, err := quoteClientOptions(serverList, batchSize, tradeDateText, bestIP)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
@@ -269,13 +302,20 @@ func runQuote(ctx context.Context, args []string, stdout io.Writer, stderr io.Wr
 }
 
 func runQuoteProbe(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	fs := newFlagSet("quote-probe", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	results := probeHQServers(ctx, []string(servers), tdx.QuoteClientOptions{})
+	serverList, err := configuredHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	results := probeHQServers(ctx, serverList, tdx.QuoteClientOptions{})
 	tdx.SortProbeResults(results)
 	encoded, err := json.MarshalIndent(results, "", "  ")
 	if err != nil {
@@ -287,12 +327,14 @@ func runQuoteProbe(ctx context.Context, args []string, stdout io.Writer, stderr 
 }
 
 func runQuoteBestIP(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var cachePath string
 	var maxAge time.Duration
 	var watch bool
 	var interval time.Duration
 	fs := newFlagSet("quote-bestip", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.Var(&servers, "server", "TDX HQ server host:port candidate; repeat or comma-separate")
 	fs.StringVar(&cachePath, "cache", tdx.DefaultHQBestIPCachePath(), "bestip cache file path")
 	fs.DurationVar(&maxAge, "max-age", tdx.DefaultHQBestIPMaxAge(), "cache validity duration")
@@ -310,7 +352,12 @@ func runQuoteBestIP(ctx context.Context, args []string, stdout io.Writer, stderr
 		return 2
 	}
 	probeOnce := func() int {
-		cache, err := refreshHQBestIPCache(ctx, []string(servers), tdx.QuoteClientOptions{
+		serverList, err := configuredHQServers([]string(servers), overrides)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		cache, err := refreshHQBestIPCache(ctx, serverList, tdx.QuoteClientOptions{
 			BestIPCachePath: cachePath,
 			BestIPMaxAge:    maxAge,
 		})
@@ -338,6 +385,7 @@ func runQuoteBestIP(ctx context.Context, args []string, stdout io.Writer, stderr
 }
 
 func runQuoteSweep(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var symbols symbolFlags
 	var servers listFlags
 	var bestIP bestIPFlags
@@ -346,6 +394,7 @@ func runQuoteSweep(ctx context.Context, args []string, stdout io.Writer, stderr 
 	var limit int
 	var tradeDateText string
 	fs := newFlagSet("quote-sweep", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.Var(&symbols, "symbol", "symbol to quote; repeat or comma-separate, accepts code or market:code")
 	fs.Var(&markets, "market", "market to discover when no symbols are provided; repeat or comma-separate")
 	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
@@ -365,7 +414,12 @@ func runQuoteSweep(ctx context.Context, args []string, stdout io.Writer, stderr 
 		}
 		requests = append(requests, req)
 	}
-	clientOpts, err := quoteClientOptions([]string(servers), batchSize, tradeDateText, bestIP)
+	serverList, err := configuredHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	clientOpts, err := quoteClientOptions(serverList, batchSize, tradeDateText, bestIP)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
@@ -390,6 +444,7 @@ func runQuoteSweep(ctx context.Context, args []string, stdout io.Writer, stderr 
 }
 
 func runHQBars(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, index bool) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market string
 	var symbol string
@@ -401,6 +456,7 @@ func runHQBars(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 		name = "hq-index-bars"
 	}
 	fs := newFlagSet(name, stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.StringVar(&market, "market", "", "market sh/sz/bj")
 	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
 	fs.IntVar(&category, "category", tdx.HQKLineDayAlt, "K-line category: 0=5m, 1=15m, 2=30m, 3=1h, 4=day, 5=week, 6=month, 7=1m, 8=1m, 9=day, 10=quarter, 11=year")
@@ -415,11 +471,16 @@ func runHQBars(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
+	serverList, err := configuredHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	var bars []tdx.HQBar
 	if index {
-		bars, err = fetchHQIndexBars(ctx, req, hqClientOptions([]string(servers)))
+		bars, err = fetchHQIndexBars(ctx, req, hqClientOptions(serverList))
 	} else {
-		bars, err = fetchHQSecurityBars(ctx, req, hqClientOptions([]string(servers)))
+		bars, err = fetchHQSecurityBars(ctx, req, hqClientOptions(serverList))
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -429,10 +490,12 @@ func runHQBars(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 }
 
 func runHQMinute(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market string
 	var symbol string
 	fs := newFlagSet("hq-minute", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.StringVar(&market, "market", "", "market sh/sz/bj")
 	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
 	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
@@ -444,7 +507,12 @@ func runHQMinute(ctx context.Context, args []string, stdout io.Writer, stderr io
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	points, err := fetchHQMinuteTime(ctx, req, hqClientOptions([]string(servers)))
+	serverList, err := configuredHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	points, err := fetchHQMinuteTime(ctx, req, hqClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -453,11 +521,13 @@ func runHQMinute(ctx context.Context, args []string, stdout io.Writer, stderr io
 }
 
 func runHQHistoryMinute(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market string
 	var symbol string
 	var dateText string
 	fs := newFlagSet("hq-history-minute", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.StringVar(&market, "market", "", "market sh/sz/bj")
 	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
 	fs.StringVar(&dateText, "date", "", "history date YYYYMMDD")
@@ -475,7 +545,12 @@ func runHQHistoryMinute(ctx context.Context, args []string, stdout io.Writer, st
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	points, err := fetchHQHistoryMinuteTime(ctx, req, date, hqClientOptions([]string(servers)))
+	serverList, err := configuredHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	points, err := fetchHQHistoryMinuteTime(ctx, req, date, hqClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -484,12 +559,14 @@ func runHQHistoryMinute(ctx context.Context, args []string, stdout io.Writer, st
 }
 
 func runHQTransactions(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market string
 	var symbol string
 	var start int
 	var count int
 	fs := newFlagSet("hq-transactions", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.StringVar(&market, "market", "", "market sh/sz/bj")
 	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
 	fs.IntVar(&start, "start", 0, "transaction start offset")
@@ -503,7 +580,12 @@ func runHQTransactions(ctx context.Context, args []string, stdout io.Writer, std
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	transactions, err := fetchHQTransactions(ctx, req, start, count, hqClientOptions([]string(servers)))
+	serverList, err := configuredHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	transactions, err := fetchHQTransactions(ctx, req, start, count, hqClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -512,6 +594,7 @@ func runHQTransactions(ctx context.Context, args []string, stdout io.Writer, std
 }
 
 func runHQHistoryTransactions(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market string
 	var symbol string
@@ -519,6 +602,7 @@ func runHQHistoryTransactions(ctx context.Context, args []string, stdout io.Writ
 	var start int
 	var count int
 	fs := newFlagSet("hq-history-transactions", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.StringVar(&market, "market", "", "market sh/sz/bj")
 	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
 	fs.StringVar(&dateText, "date", "", "history date YYYYMMDD")
@@ -538,7 +622,12 @@ func runHQHistoryTransactions(ctx context.Context, args []string, stdout io.Writ
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	transactions, err := fetchHQHistoryTransactions(ctx, req, date, start, count, hqClientOptions([]string(servers)))
+	serverList, err := configuredHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	transactions, err := fetchHQHistoryTransactions(ctx, req, date, start, count, hqClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -547,10 +636,12 @@ func runHQHistoryTransactions(ctx context.Context, args []string, stdout io.Writ
 }
 
 func runHQCompanyCategories(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market string
 	var symbol string
 	fs := newFlagSet("hq-company-categories", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.StringVar(&market, "market", "", "market sh/sz/bj")
 	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
 	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
@@ -562,7 +653,12 @@ func runHQCompanyCategories(ctx context.Context, args []string, stdout io.Writer
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	categories, err := fetchHQCompanyInfoCategories(ctx, req, hqClientOptions([]string(servers)))
+	serverList, err := configuredHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	categories, err := fetchHQCompanyInfoCategories(ctx, req, hqClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -571,6 +667,7 @@ func runHQCompanyCategories(ctx context.Context, args []string, stdout io.Writer
 }
 
 func runHQCompanyContent(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market string
 	var symbol string
@@ -578,6 +675,7 @@ func runHQCompanyContent(ctx context.Context, args []string, stdout io.Writer, s
 	var start uint
 	var length uint
 	fs := newFlagSet("hq-company-content", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.StringVar(&market, "market", "", "market sh/sz/bj")
 	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
 	fs.StringVar(&filename, "filename", "", "company info filename")
@@ -596,7 +694,12 @@ func runHQCompanyContent(ctx context.Context, args []string, stdout io.Writer, s
 		fmt.Fprintln(stderr, "--length must be positive and offsets must fit uint32")
 		return 2
 	}
-	content, err := fetchHQCompanyInfoContent(ctx, req, filename, uint32(start), uint32(length), hqClientOptions([]string(servers)))
+	serverList, err := configuredHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	content, err := fetchHQCompanyInfoContent(ctx, req, filename, uint32(start), uint32(length), hqClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -605,10 +708,12 @@ func runHQCompanyContent(ctx context.Context, args []string, stdout io.Writer, s
 }
 
 func runHQXDXR(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market string
 	var symbol string
 	fs := newFlagSet("hq-xdxr", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.StringVar(&market, "market", "", "market sh/sz/bj")
 	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
 	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
@@ -620,7 +725,12 @@ func runHQXDXR(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	rows, err := fetchHQXDXRInfo(ctx, req, hqClientOptions([]string(servers)))
+	serverList, err := configuredHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	rows, err := fetchHQXDXRInfo(ctx, req, hqClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -674,7 +784,12 @@ func runRefreshTDXXDXR(ctx context.Context, args []string, stdout io.Writer, std
 	}
 	runID := newLocalRunID()
 	started := time.Now()
-	rows, err := fetchHQXDXRInfo(ctx, req, hqClientOptions([]string(servers)))
+	serverList, err := configuredHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	rows, err := fetchHQXDXRInfo(ctx, req, hqClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1030,7 +1145,11 @@ func runRefreshTDXXDXRAll(ctx context.Context, stdout io.Writer, stderr io.Write
 	if market != "" {
 		total.Asset = market + ":all"
 	}
-	opts := hqClientOptions(servers)
+	serverList := servers
+	if len(serverList) == 0 {
+		serverList = append([]string(nil), cfg.TDX.HQServers...)
+	}
+	opts := hqClientOptions(serverList)
 	jobs := make(chan model.Symbol)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -1283,10 +1402,12 @@ func runRefreshDailyDerivedAll(ctx context.Context, stdout io.Writer, stderr io.
 }
 
 func runHQFinance(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market string
 	var symbol string
 	fs := newFlagSet("hq-finance", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.StringVar(&market, "market", "", "market sh/sz/bj")
 	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
 	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
@@ -1298,7 +1419,12 @@ func runHQFinance(ctx context.Context, args []string, stdout io.Writer, stderr i
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	info, err := fetchHQFinanceInfo(ctx, req, hqClientOptions([]string(servers)))
+	serverList, err := configuredHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	info, err := fetchHQFinanceInfo(ctx, req, hqClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1307,9 +1433,11 @@ func runHQFinance(ctx context.Context, args []string, stdout io.Writer, stderr i
 }
 
 func runHQBlockMeta(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var file string
 	fs := newFlagSet("hq-block-meta", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.StringVar(&file, "file", "", "block file, such as block.dat, block_zs.dat, block_fg.dat, block_gn.dat")
 	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
 	if err := fs.Parse(args); err != nil {
@@ -1319,7 +1447,12 @@ func runHQBlockMeta(ctx context.Context, args []string, stdout io.Writer, stderr
 		fmt.Fprintln(stderr, "--file is required")
 		return 2
 	}
-	meta, err := fetchHQBlockMeta(ctx, file, hqClientOptions([]string(servers)))
+	serverList, err := configuredHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	meta, err := fetchHQBlockMeta(ctx, file, hqClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1328,9 +1461,11 @@ func runHQBlockMeta(ctx context.Context, args []string, stdout io.Writer, stderr
 }
 
 func runHQBlock(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var file string
 	fs := newFlagSet("hq-block", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.StringVar(&file, "file", "", "block file, such as block.dat, block_zs.dat, block_fg.dat, block_gn.dat")
 	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
 	if err := fs.Parse(args); err != nil {
@@ -1340,7 +1475,12 @@ func runHQBlock(ctx context.Context, args []string, stdout io.Writer, stderr io.
 		fmt.Fprintln(stderr, "--file is required")
 		return 2
 	}
-	members, err := fetchHQBlockMembers(ctx, file, hqClientOptions([]string(servers)))
+	serverList, err := configuredHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	members, err := fetchHQBlockMembers(ctx, file, hqClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1349,13 +1489,20 @@ func runHQBlock(ctx context.Context, args []string, stdout io.Writer, stderr io.
 }
 
 func runExQuoteMarkets(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	fs := newFlagSet("exquote-markets", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.Var(&servers, "server", "TDX ExHQ server host:port; repeat or comma-separate")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	markets, err := fetchExMarkets(ctx, exQuoteClientOptions([]string(servers)))
+	serverList, err := configuredExHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	markets, err := fetchExMarkets(ctx, exQuoteClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1370,13 +1517,20 @@ func runExQuoteMarkets(ctx context.Context, args []string, stdout io.Writer, std
 }
 
 func runExQuoteCount(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	fs := newFlagSet("exquote-count", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.Var(&servers, "server", "TDX ExHQ server host:port; repeat or comma-separate")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	count, err := fetchExInstrumentCount(ctx, exQuoteClientOptions([]string(servers)))
+	serverList, err := configuredExHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	count, err := fetchExInstrumentCount(ctx, exQuoteClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1385,10 +1539,12 @@ func runExQuoteCount(ctx context.Context, args []string, stdout io.Writer, stder
 }
 
 func runExQuoteInstruments(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var start int
 	var count int
 	fs := newFlagSet("exquote-instruments", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.IntVar(&start, "start", 0, "instrument list start offset")
 	fs.IntVar(&count, "count", tdx.DefaultExInstrumentListCount, "instrument list count")
 	fs.Var(&servers, "server", "TDX ExHQ server host:port; repeat or comma-separate")
@@ -1399,7 +1555,12 @@ func runExQuoteInstruments(ctx context.Context, args []string, stdout io.Writer,
 		fmt.Fprintf(stderr, "--start must be non-negative and --count must be between 1 and %d\n", tdx.MaxExInstrumentListCount)
 		return 2
 	}
-	instruments, err := fetchExInstruments(ctx, start, count, exQuoteClientOptions([]string(servers)))
+	serverList, err := configuredExHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	instruments, err := fetchExInstruments(ctx, start, count, exQuoteClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1408,10 +1569,12 @@ func runExQuoteInstruments(ctx context.Context, args []string, stdout io.Writer,
 }
 
 func runExQuote(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market int
 	var code string
 	fs := newFlagSet("exquote", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.IntVar(&market, "market", 0, "TDX ExHQ numeric market id")
 	fs.StringVar(&code, "code", "", "TDX ExHQ instrument code")
 	fs.Var(&servers, "server", "TDX ExHQ server host:port; repeat or comma-separate")
@@ -1423,7 +1586,12 @@ func runExQuote(ctx context.Context, args []string, stdout io.Writer, stderr io.
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	quote, err := fetchExQuote(ctx, req, exQuoteClientOptions([]string(servers)))
+	serverList, err := configuredExHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	quote, err := fetchExQuote(ctx, req, exQuoteClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1438,6 +1606,7 @@ func runExQuote(ctx context.Context, args []string, stdout io.Writer, stderr io.
 }
 
 func runExQuoteBars(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market int
 	var code string
@@ -1445,6 +1614,7 @@ func runExQuoteBars(ctx context.Context, args []string, stdout io.Writer, stderr
 	var start int
 	var count int
 	fs := newFlagSet("exquote-bars", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.IntVar(&market, "market", 0, "TDX ExHQ numeric market id")
 	fs.StringVar(&code, "code", "", "TDX ExHQ instrument code")
 	fs.IntVar(&category, "category", tdx.ExKLineDaily, "K-line category: 0=5m, 1=15m, 2=30m, 3=1h, 4=day, 5=week, 6=month, 7=ExHQ 1m, 8=1m, 9=day, 10=quarter, 11=year")
@@ -1459,7 +1629,12 @@ func runExQuoteBars(ctx context.Context, args []string, stdout io.Writer, stderr
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	bars, err := fetchExBars(ctx, req, exQuoteClientOptions([]string(servers)))
+	serverList, err := configuredExHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	bars, err := fetchExBars(ctx, req, exQuoteClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1468,10 +1643,12 @@ func runExQuoteBars(ctx context.Context, args []string, stdout io.Writer, stderr
 }
 
 func runExQuoteMinute(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market int
 	var code string
 	fs := newFlagSet("exquote-minute", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.IntVar(&market, "market", 0, "TDX ExHQ numeric market id")
 	fs.StringVar(&code, "code", "", "TDX ExHQ instrument code")
 	fs.Var(&servers, "server", "TDX ExHQ server host:port; repeat or comma-separate")
@@ -1483,7 +1660,12 @@ func runExQuoteMinute(ctx context.Context, args []string, stdout io.Writer, stde
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	points, err := fetchExMinuteTime(ctx, req, exQuoteClientOptions([]string(servers)))
+	serverList, err := configuredExHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	points, err := fetchExMinuteTime(ctx, req, exQuoteClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1492,11 +1674,13 @@ func runExQuoteMinute(ctx context.Context, args []string, stdout io.Writer, stde
 }
 
 func runExQuoteHistoryMinute(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market int
 	var code string
 	var dateText string
 	fs := newFlagSet("exquote-history-minute", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.IntVar(&market, "market", 0, "TDX ExHQ numeric market id")
 	fs.StringVar(&code, "code", "", "TDX ExHQ instrument code")
 	fs.StringVar(&dateText, "date", "", "history date YYYYMMDD")
@@ -1514,7 +1698,12 @@ func runExQuoteHistoryMinute(ctx context.Context, args []string, stdout io.Write
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	points, err := fetchExHistoryMinuteTime(ctx, req, date, exQuoteClientOptions([]string(servers)))
+	serverList, err := configuredExHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	points, err := fetchExHistoryMinuteTime(ctx, req, date, exQuoteClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1523,12 +1712,14 @@ func runExQuoteHistoryMinute(ctx context.Context, args []string, stdout io.Write
 }
 
 func runExQuoteTransactions(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market int
 	var code string
 	var start int
 	var count int
 	fs := newFlagSet("exquote-transactions", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.IntVar(&market, "market", 0, "TDX ExHQ numeric market id")
 	fs.StringVar(&code, "code", "", "TDX ExHQ instrument code")
 	fs.IntVar(&start, "start", 0, "transaction start offset")
@@ -1546,7 +1737,12 @@ func runExQuoteTransactions(ctx context.Context, args []string, stdout io.Writer
 		fmt.Fprintf(stderr, "--start must be non-negative and --count must be between 1 and %d\n", tdx.MaxExTransactionCount)
 		return 2
 	}
-	transactions, err := fetchExTransactions(ctx, req, start, count, exQuoteClientOptions([]string(servers)))
+	serverList, err := configuredExHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	transactions, err := fetchExTransactions(ctx, req, start, count, exQuoteClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1555,6 +1751,7 @@ func runExQuoteTransactions(ctx context.Context, args []string, stdout io.Writer
 }
 
 func runExQuoteHistoryTransactions(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market int
 	var code string
@@ -1562,6 +1759,7 @@ func runExQuoteHistoryTransactions(ctx context.Context, args []string, stdout io
 	var start int
 	var count int
 	fs := newFlagSet("exquote-history-transactions", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.IntVar(&market, "market", 0, "TDX ExHQ numeric market id")
 	fs.StringVar(&code, "code", "", "TDX ExHQ instrument code")
 	fs.StringVar(&dateText, "date", "", "history date YYYYMMDD")
@@ -1585,7 +1783,12 @@ func runExQuoteHistoryTransactions(ctx context.Context, args []string, stdout io
 		fmt.Fprintf(stderr, "--start must be non-negative and --count must be between 1 and %d\n", tdx.MaxExTransactionCount)
 		return 2
 	}
-	transactions, err := fetchExHistoryTransactions(ctx, req, date, start, count, exQuoteClientOptions([]string(servers)))
+	serverList, err := configuredExHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	transactions, err := fetchExHistoryTransactions(ctx, req, date, start, count, exQuoteClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1594,12 +1797,14 @@ func runExQuoteHistoryTransactions(ctx context.Context, args []string, stdout io
 }
 
 func runExQuoteHistoryBars(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
 	var servers listFlags
 	var market int
 	var code string
 	var startDateText string
 	var endDateText string
 	fs := newFlagSet("exquote-history-bars", stderr)
+	registerConfigPathFlag(fs, &overrides)
 	fs.IntVar(&market, "market", 0, "TDX ExHQ numeric market id")
 	fs.StringVar(&code, "code", "", "TDX ExHQ instrument code")
 	fs.StringVar(&startDateText, "start-date", "", "range start date YYYYMMDD")
@@ -1627,7 +1832,12 @@ func runExQuoteHistoryBars(ctx context.Context, args []string, stdout io.Writer,
 		fmt.Fprintln(stderr, "--start-date must be <= --end-date")
 		return 2
 	}
-	bars, err := fetchExHistoryBarsRange(ctx, req, startDate, endDate, exQuoteClientOptions([]string(servers)))
+	serverList, err := configuredExHQServers([]string(servers), overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	bars, err := fetchExHistoryBarsRange(ctx, req, startDate, endDate, exQuoteClientOptions(serverList))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1875,7 +2085,11 @@ func runImportIntradayPoints(ctx context.Context, args []string, stdout io.Write
 		return 1
 	}
 	defer cleanup()
-	clientOpts, err := quoteClientOptions([]string(servers), cfg.Runtime.BatchSize, "", bestIP)
+	serverList := []string(servers)
+	if len(serverList) == 0 {
+		serverList = append([]string(nil), cfg.TDX.HQServers...)
+	}
+	clientOpts, err := quoteClientOptions(serverList, cfg.Runtime.BatchSize, "", bestIP)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2

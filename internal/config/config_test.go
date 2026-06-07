@@ -34,6 +34,8 @@ func TestLoadConfigFile(t *testing.T) {
     ops: "infinity_ops"
 tdx:
   root: "/tmp/tdx"
+  hq_servers: ["hq1:7709", "hq2:7709"]
+  exhq_servers: ["ex1:7727", "ex2:7727"]
 runtime:
   timezone: "Asia/Shanghai"
   batch_size: 5000
@@ -65,6 +67,12 @@ logging:
 	}
 	if cfg.TDX.Root != "/tmp/tdx" {
 		t.Fatalf("tdx root = %q", cfg.TDX.Root)
+	}
+	if strings.Join(cfg.TDX.HQServers, ",") != "hq1:7709,hq2:7709" {
+		t.Fatalf("tdx hq servers = %#v", cfg.TDX.HQServers)
+	}
+	if strings.Join(cfg.TDX.ExHQServers, ",") != "ex1:7727,ex2:7727" {
+		t.Fatalf("tdx exhq servers = %#v", cfg.TDX.ExHQServers)
 	}
 	if cfg.Runtime.BatchSize != 5000 {
 		t.Fatalf("batch size = %d", cfg.Runtime.BatchSize)

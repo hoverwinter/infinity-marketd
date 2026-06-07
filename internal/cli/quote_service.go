@@ -64,7 +64,11 @@ func runQuoteServe(ctx context.Context, args []string, stdout io.Writer, stderr 
 	}
 	defer store.Close()
 
-	svc := quotesvc.NewService(cfg.QuoteService, store, nil, nil)
+	quoteServiceCfg := cfg.QuoteService
+	if len(quoteServiceCfg.Servers) == 0 {
+		quoteServiceCfg.Servers = append([]string(nil), cfg.TDX.HQServers...)
+	}
+	svc := quotesvc.NewService(quoteServiceCfg, store, nil, nil)
 	defer svc.Close()
 
 	plan, err := svc.Plan(ctx, requests, []string(markets), limit)
@@ -78,7 +82,7 @@ func runQuoteServe(ctx context.Context, args []string, stdout io.Writer, stderr 
 		RunID:  resumeID,
 		Plan:   plan,
 		Resume: resumeID != "",
-	}, cfg.QuoteService.ShutdownDeadline.Duration())
+	}, quoteServiceCfg.ShutdownDeadline.Duration())
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
