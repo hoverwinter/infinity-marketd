@@ -124,3 +124,61 @@ The system SHALL keep local TDX imports independent from remote TDX services.
 - **WHEN** an operator runs `import-tdx-day`, `import-tdx-1m`, or `import-tdx-5m`
 - **THEN** marketd reads only local files and ClickHouse
 - **AND** it MUST NOT connect to remote TDX servers
+
+### Requirement: Local minute imports do not populate intraday points
+The system SHALL keep local TDX 1-minute OHLCV imports separate from persisted TDX standard HQ intraday point imports.
+
+#### Scenario: One-minute local import writes only bars
+- **WHEN** an operator runs `marketd import-tdx-1m`
+- **THEN** marketd writes valid records to `infinity_market.a_share_bars_1m`
+- **AND** it MUST NOT write rows to `infinity_market.a_share_intraday_points`
+
+#### Scenario: Five-minute local import does not write intraday points
+- **WHEN** an operator runs `marketd import-tdx-5m`
+- **THEN** marketd writes valid records to `infinity_market.a_share_bars_5m`
+- **AND** it MUST NOT write rows to `infinity_market.a_share_intraday_points`
+
+#### Scenario: No implicit point derivation from bars
+- **WHEN** local minute OHLCV bars are imported
+- **THEN** marketd MUST NOT derive intraday points from bar close and volume as an import side effect
+
+### Requirement: Local OHLCV imports remain raw-only
+The system SHALL keep local TDX OHLCV imports independent from adjusted bar factor refreshes.
+
+#### Scenario: Daily import does not refresh adjustment factors
+- **WHEN** an operator runs `marketd import-tdx-day`
+- **THEN** the command writes only canonical raw daily OHLCV facts and import quality metadata
+- **AND** it MUST NOT fetch xdxr events
+- **AND** it MUST NOT refresh qfq or hfq adjustment factors as a hidden side effect
+
+#### Scenario: Minute imports do not refresh adjustment factors
+- **WHEN** an operator runs `marketd import-tdx-1m` or `marketd import-tdx-5m`
+- **THEN** the command writes only canonical raw minute OHLCV facts and import quality metadata
+- **AND** it MUST NOT fetch xdxr events
+- **AND** it MUST NOT refresh qfq or hfq adjustment factors as a hidden side effect
+
+### Requirement: Client-local reference-data import command behavior
+The system SHALL apply the existing local import safety and ops behavior to client-local reference-data imports.
+
+#### Scenario: Reference import supports explicit client-local file input
+- **WHEN** an operator runs a client-local reference-data import command for `gbbq`, block, custom block, or `ex_daily`
+- **THEN** the command supports explicit `--file`
+- **AND** commands that can safely discover conventional TDX paths support `--root`
+- **AND** `ex_daily` imports require explicit `--market` and `--code` until a concrete extension-market path family such as `Lxxx` or `vipdoc/ds/lday` is covered by fixtures and tests
+
+#### Scenario: Reference import reports quality issues
+- **WHEN** a client-local reference-data import encounters invalid date, unsupported market, unsupported symbol, unsupported format variant, malformed text encoding, trailing bytes, duplicate logical key, conflicting logical key, or zero valid rows
+- **THEN** marketd records a data quality issue with input path and record offset when available
+- **AND** the task run is not reported as a clean success
+
+#### Scenario: Reference import remains local-only
+- **WHEN** an operator runs a client-local reference-data import command
+- **THEN** marketd reads only local files and ClickHouse
+- **AND** it MUST NOT connect to remote TDX servers
+
+#### Scenario: Reference import dry-run
+- **WHEN** an operator adds `--dry-run` to a local reference-data import command
+- **THEN** marketd parses and validates local input
+- **AND** it reports the target table, input format, row counts, skipped rows, and quality issues
+- **AND** it does not write market tables or ops tables
+
