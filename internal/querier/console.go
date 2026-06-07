@@ -3,6 +3,7 @@ package querier
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -228,6 +229,9 @@ func consoleBestIPStatus(cachePath string, load func(string) (tdx.HQBestIPCache,
 	if err != nil {
 		if cachePath == "" {
 			cachePath = tdx.DefaultHQBestIPCachePath()
+		}
+		if os.IsNotExist(err) {
+			return ConsoleBestIPStatus{CachePath: cachePath, Results: []tdx.ServerProbeResult{}}
 		}
 		return ConsoleBestIPStatus{CachePath: cachePath, Results: []tdx.ServerProbeResult{}, Error: err.Error()}
 	}

@@ -212,6 +212,7 @@ function BestIP({ state, reload }: { state: Loadable<BestIPStatus>; reload: () =
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState("");
   const results = state.data?.results ?? [];
+  const hasCache = Boolean(state.data?.generated_at || state.data?.expires_at || results.length > 0);
 
   const refresh = async () => {
     setRefreshing(true);
@@ -238,7 +239,7 @@ function BestIP({ state, reload }: { state: Loadable<BestIPStatus>; reload: () =
             <Metric label="Expires" value={formatClock(state.data.expires_at)} sub="bestip cache" icon={Gauge} />
           </div>
           {state.data.error && <ErrorState message={state.data.error} />}
-          <Panel title="Refresh bestip" icon={RefreshCw}>
+          <Panel title={hasCache ? "Refresh bestip" : "Generate bestip"} icon={RefreshCw}>
             <div className="form-row">
               <label>
                 <span>Servers</span>
@@ -250,7 +251,7 @@ function BestIP({ state, reload }: { state: Loadable<BestIPStatus>; reload: () =
               </label>
               <button className="primary-button" type="button" onClick={() => void refresh()} disabled={refreshing}>
                 <RefreshCw size={17} />
-                <span>{refreshing ? "Refreshing" : "Refresh"}</span>
+                <span>{refreshing ? (hasCache ? "Refreshing" : "Generating") : hasCache ? "Refresh" : "Generate"}</span>
               </button>
             </div>
             {refreshError && <p className="inline-error">{refreshError}</p>}

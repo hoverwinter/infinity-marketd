@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -259,7 +260,7 @@ func TestConsoleBestIPStatusAndRefresh(t *testing.T) {
 func TestConsoleBestIPMissingCacheReturnsEmptyResults(t *testing.T) {
 	provider := DefaultTDXProvider()
 	provider.LoadHQBestIPCache = func(string) (tdx.HQBestIPCache, error) {
-		return tdx.HQBestIPCache{}, errors.New("cache not found")
+		return tdx.HQBestIPCache{}, os.ErrNotExist
 	}
 	server := httptest.NewServer(NewServerWithTDXProvider(&fakeRepo{}, provider).Handler())
 	defer server.Close()
@@ -276,7 +277,7 @@ func TestConsoleBestIPMissingCacheReturnsEmptyResults(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
 		t.Fatal(err)
 	}
-	if status.Usable || status.Error == "" {
+	if status.Usable || status.Error != "" {
 		t.Fatalf("status=%+v", status)
 	}
 	if status.Results == nil || len(status.Results) != 0 {
