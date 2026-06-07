@@ -7,7 +7,7 @@ import (
 
 const (
 	Version       = "0.1.0"
-	SchemaVersion = "2026-06-06"
+	SchemaVersion = "2026-06-07"
 )
 
 type Health struct {
@@ -20,6 +20,7 @@ type BarQuery struct {
 	Market string `json:"market"`
 	Symbol string `json:"symbol"`
 	Period string `json:"period"`
+	Adjust string `json:"adjust"`
 	Since  string `json:"since,omitempty"`
 	Until  string `json:"until,omitempty"`
 	Limit  int    `json:"limit"`
@@ -44,12 +45,38 @@ type BarResult struct {
 	Bars  []Bar    `json:"bars"`
 }
 
+type IntradayPointQuery struct {
+	Market string `json:"market"`
+	Symbol string `json:"symbol"`
+	Date   string `json:"date,omitempty"`
+	Since  string `json:"since,omitempty"`
+	Until  string `json:"until,omitempty"`
+	Limit  int    `json:"limit"`
+}
+
+type IntradayPoint struct {
+	Market     string    `json:"market"`
+	Symbol     string    `json:"symbol"`
+	TradeDate  string    `json:"trade_date"`
+	PointTime  time.Time `json:"point_time"`
+	PointIndex uint16    `json:"point_index"`
+	Price      float64   `json:"price"`
+	Volume     uint64    `json:"volume"`
+}
+
+type IntradayPointResult struct {
+	Query  IntradayPointQuery `json:"query"`
+	Points []IntradayPoint    `json:"points"`
+}
+
 type SymbolResolution struct {
 	Symbol string `json:"symbol"`
 	Market string `json:"market"`
 }
 
 type Repository interface {
+	ConsoleRepository
 	Health(ctx context.Context) error
 	Bars(ctx context.Context, query BarQuery) (BarResult, error)
+	IntradayPoints(ctx context.Context, query IntradayPointQuery) (IntradayPointResult, error)
 }

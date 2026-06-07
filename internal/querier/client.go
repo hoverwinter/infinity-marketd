@@ -36,6 +36,9 @@ func (c *HTTPClient) Bars(ctx context.Context, query BarQuery) (BarResult, error
 	values.Set("market", query.Market)
 	values.Set("symbol", query.Symbol)
 	values.Set("period", query.Period)
+	if query.Adjust != "" {
+		values.Set("adjust", query.Adjust)
+	}
 	if query.Since != "" {
 		values.Set("since", query.Since)
 	}
@@ -47,6 +50,29 @@ func (c *HTTPClient) Bars(ctx context.Context, query BarQuery) (BarResult, error
 	}
 	var result BarResult
 	if err := c.getJSON(ctx, "/api/v1/bars", values, &result); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (c *HTTPClient) IntradayPoints(ctx context.Context, query IntradayPointQuery) (IntradayPointResult, error) {
+	values := url.Values{}
+	values.Set("market", query.Market)
+	values.Set("symbol", query.Symbol)
+	if query.Date != "" {
+		values.Set("date", query.Date)
+	}
+	if query.Since != "" {
+		values.Set("since", query.Since)
+	}
+	if query.Until != "" {
+		values.Set("until", query.Until)
+	}
+	if query.Limit > 0 {
+		values.Set("limit", strconv.Itoa(query.Limit))
+	}
+	var result IntradayPointResult
+	if err := c.getJSON(ctx, "/api/v1/intraday-points", values, &result); err != nil {
 		return result, err
 	}
 	return result, nil

@@ -47,6 +47,8 @@ func runQuerier(ctx context.Context, args []string, stdout io.Writer, stderr io.
 		return runQuerierHealth(ctx, args[1:], stdout, stderr)
 	case "bars":
 		return runQuerierBars(ctx, args[1:], stdout, stderr)
+	case "intraday-points":
+		return runQuerierIntradayPoints(ctx, args[1:], stdout, stderr)
 	case "resolve-symbol":
 		return runQuerierResolveSymbol(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -62,9 +64,11 @@ func runQuerier(ctx context.Context, args []string, stdout io.Writer, stderr io.
 func runQuerierServe(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	var overrides config.Overrides
 	var listen string
+	var consoleDist string
 	fs := newFlagSet("querier serve", stderr)
 	config.RegisterCommonFlags(fs, &overrides)
 	fs.StringVar(&listen, "listen", envOrDefault("INFINITY_QUERIER_LISTEN", "127.0.0.1:8808"), "HTTP listen address")
+	fs.StringVar(&consoleDist, "console-dist", envOrDefault("INFINITY_CONSOLE_DIST", ""), "Vite console dist directory to serve at /console/")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -87,7 +91,7 @@ func runQuerierServe(ctx context.Context, args []string, stdout io.Writer, stder
 	server := querier.NewServer(store)
 	httpServer := &http.Server{
 		Addr:              listen,
-		Handler:           server.Handler(),
+		Handler:           server.HandlerWithConsoleDist(consoleDist),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	fmt.Fprintf(stdout, "querier listening on http://%s\n", listen)
@@ -118,13 +122,14 @@ func runQuerierHealth(ctx context.Context, args []string, stdout io.Writer, stde
 }
 
 func runQuerierBars(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
-	var baseURL, market, symbol, period, since, until string
+	var baseURL, market, symbol, period, adjust, since, until string
 	var limit int
 	fs := newFlagSet("querier bars", stderr)
 	registerServiceFlags(fs, &baseURL)
 	fs.StringVar(&market, "market", "", "market sh/sz/bj")
 	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
 	fs.StringVar(&period, "period", "1d", "bar period: 1d, 1m, or 5m")
+	fs.StringVar(&adjust, "adjust", "none", "adjustment mode: none, qfq, or hfq")
 	fs.StringVar(&since, "since", "", "inclusive lower bound date/time")
 	fs.StringVar(&until, "until", "", "exclusive upper bound date/time")
 	fs.IntVar(&limit, "limit", 1000, "maximum rows to return")
@@ -136,6 +141,38 @@ func runQuerierBars(ctx context.Context, args []string, stdout io.Writer, stderr
 		Market: market,
 		Symbol: symbol,
 		Period: period,
+		Adjust: adjust,
+		Since:  since,
+		Until:  until,
+		Limit:  limit,
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	writeJSON(stdout, result)
+	return 0
+}
+
+func runQuerierIntradayPoints(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var baseURL, market, symbol, dateText, since, until string
+	var limit int
+	fs := newFlagSet("querier intraday-points", stderr)
+	registerServiceFlags(fs, &baseURL)
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	fs.StringVar(&dateText, "date", "", "trade date YYYY-MM-DD or YYYYMMDD")
+	fs.StringVar(&since, "since", "", "inclusive lower bound date/time")
+	fs.StringVar(&until, "until", "", "inclusive upper bound date/time")
+	fs.IntVar(&limit, "limit", 1000, "maximum rows to return")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	client := querier.NewHTTPClient(baseURL, nil)
+	result, err := client.IntradayPoints(ctx, querier.IntradayPointQuery{
+		Market: market,
+		Symbol: symbol,
+		Date:   dateText,
 		Since:  since,
 		Until:  until,
 		Limit:  limit,
@@ -214,5 +251,6 @@ func printQuerierUsage(out io.Writer) {
 	fmt.Fprintln(out, "  serve")
 	fmt.Fprintln(out, "  health")
 	fmt.Fprintln(out, "  bars")
+	fmt.Fprintln(out, "  intraday-points")
 	fmt.Fprintln(out, "  resolve-symbol")
 }

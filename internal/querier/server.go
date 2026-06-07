@@ -28,11 +28,20 @@ func NewServerWithTDXProvider(repo Repository, provider *TDXProvider) *Server {
 }
 
 func (s *Server) Handler() http.Handler {
+	return s.HandlerWithConsoleDist("")
+}
+
+func (s *Server) HandlerWithConsoleDist(consoleDist string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/bars", s.handleBars)
+	mux.HandleFunc("GET /api/v1/intraday-points", s.handleIntradayPoints)
 	mux.HandleFunc("GET /api/v1/resolve-symbol", s.handleResolveSymbol)
 	s.registerTDXRoutes(mux)
+	s.registerConsoleRoutes(mux)
+	if strings.TrimSpace(consoleDist) != "" {
+		registerConsoleStaticRoutes(mux, consoleDist)
+	}
 	return mux
 }
 
@@ -54,6 +63,16 @@ func (s *Server) handleBars(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) handleIntradayPoints(w http.ResponseWriter, r *http.Request) {
+	query := intradayPointQueryFromRequest(r)
+	result, err := s.repo.IntradayPoints(r.Context(), query)
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) handleResolveSymbol(w http.ResponseWriter, r *http.Request) {
 	symbol := strings.TrimSpace(r.URL.Query().Get("symbol"))
 	if !symbolPattern.MatchString(symbol) {
@@ -63,6 +82,19 @@ func (s *Server) handleResolveSymbol(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, SymbolResolution{Symbol: symbol, Market: tdx.InferMarketFromCode(symbol)})
 }
 
+func intradayPointQueryFromRequest(r *http.Request) IntradayPointQuery {
+	values := r.URL.Query()
+	limit, _ := strconv.Atoi(values.Get("limit"))
+	return IntradayPointQuery{
+		Market: strings.TrimSpace(values.Get("market")),
+		Symbol: strings.TrimSpace(values.Get("symbol")),
+		Date:   strings.TrimSpace(values.Get("date")),
+		Since:  strings.TrimSpace(values.Get("since")),
+		Until:  strings.TrimSpace(values.Get("until")),
+		Limit:  limit,
+	}
+}
+
 func barQueryFromRequest(r *http.Request) BarQuery {
 	values := r.URL.Query()
 	limit, _ := strconv.Atoi(values.Get("limit"))
@@ -70,6 +102,7 @@ func barQueryFromRequest(r *http.Request) BarQuery {
 		Market: strings.TrimSpace(values.Get("market")),
 		Symbol: strings.TrimSpace(values.Get("symbol")),
 		Period: strings.TrimSpace(values.Get("period")),
+		Adjust: strings.TrimSpace(values.Get("adjust")),
 		Since:  strings.TrimSpace(values.Get("since")),
 		Until:  strings.TrimSpace(values.Get("until")),
 		Limit:  limit,
@@ -90,7 +123,23 @@ func statusForError(err error) int {
 	if IsValidationError(err) {
 		return http.StatusBadRequest
 	}
+	if IsMissingAdjustmentFactorError(err) {
+		return http.StatusConflict
+	}
 	return http.StatusInternalServerError
+}
+
+type MissingAdjustmentFactorError struct {
+	Message string
+}
+
+func (e MissingAdjustmentFactorError) Error() string {
+	return e.Message
+}
+
+func IsMissingAdjustmentFactorError(err error) bool {
+	var missingErr MissingAdjustmentFactorError
+	return errors.As(err, &missingErr)
 }
 
 type ValidationError struct {

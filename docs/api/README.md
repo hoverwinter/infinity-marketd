@@ -84,6 +84,12 @@ trade_date = YYYY-MM-DD
 bar_time = Asia/Shanghai datetime
 ```
 
+分时点使用同一时区：
+
+```text
+point_time = Asia/Shanghai datetime
+```
+
 `since` 和 `until` 都是包含式。
 
 日 K：
@@ -190,9 +196,34 @@ GET /api/v1/bars?market=sh&symbol=600519&period=1d&since=2024-01-01&until=2024-1
 | `market` | yes | 市场，取值 `sh` / `sz` / `bj` |
 | `symbol` | yes | 6 位证券代码，例如 `600519` |
 | `period` | no | 周期，取值 `1d` / `1m` / `5m`，默认 `1d` |
+| `adjust` | no | 复权模式，取值 `none` / `qfq` / `hfq`，默认 `none` |
 | `since` | no | 起始日期或时间，包含式 |
 | `until` | no | 截止日期或时间，包含式 |
 | `limit` | no | 最大返回条数，默认 `1000`，最大 `10000` |
+
+### Adjustment Semantics
+
+`adjust=none` 返回 canonical raw OHLCV。
+
+`adjust=qfq` / `adjust=hfq` 读取已落库的日级复权因子并调整 OHLC：
+
+```text
+adjusted_open  = raw_open  * factor
+adjusted_high  = raw_high  * factor
+adjusted_low   = raw_low   * factor
+adjusted_close = raw_close * factor
+```
+
+分钟 K 使用同一 `trade_date` 的日级因子。`volume` 和 `amount` 保持原始值，不随复权因子缩放。复权价格是分析价格，不是交易所真实成交价。
+
+`/api/v1/bars` 不会在请求路径里连接 live TDX server。使用复权查询前，operator 需要先刷新：
+
+```bash
+marketd refresh-tdx-xdxr --market sh --symbol 600519
+marketd refresh-adjust-factors --market sh --symbol 600519
+```
+
+如果请求区间内缺少所需复权因子，服务返回 `409 Conflict`，不会在同一个成功响应中混合 raw 和 adjusted OHLC。
 
 ### Date And Datetime Format
 
@@ -222,6 +253,7 @@ since=RFC3339
     "market": "sh",
     "symbol": "600519",
     "period": "1d",
+    "adjust": "none",
     "since": "2024-01-01",
     "until": "2024-12-31",
     "limit": 1000
@@ -270,6 +302,7 @@ Daily bar fields:
     "market": "sh",
     "symbol": "600519",
     "period": "1m",
+    "adjust": "none",
     "since": "2026-01-01 09:30:00",
     "until": "2026-01-01 15:00:00",
     "limit": 10000
@@ -344,6 +377,14 @@ GET /api/v1/bars?market=bad&symbol=600519&period=1d
 }
 ```
 
+非法 adjust：
+
+```json
+{
+  "error": "adjust must be none, qfq, or hfq"
+}
+```
+
 非法 limit：
 
 ```json
@@ -357,6 +398,77 @@ GET /api/v1/bars?market=bad&symbol=600519&period=1d
 ```json
 {
   "error": "invalid date \"2024/01/01\", expected YYYY-MM-DD"
+}
+```
+
+## GET /api/v1/intraday-points
+
+查询已落库的 A 股 TDX 分时点。该接口只读 ClickHouse 中的 `a_share_intraday_points`，不会连接 live TDX server 补数据。
+
+分时点是 `price + volume` point，不是 1 分钟 OHLCV K 线。
+
+### Request
+
+按交易日查询：
+
+```http
+GET /api/v1/intraday-points?market=sh&symbol=600519&date=2026-06-05&limit=240
+```
+
+按时间范围查询：
+
+```http
+GET /api/v1/intraday-points?market=sh&symbol=600519&since=2026-06-05T09:30:00&until=2026-06-05T15:00:00&limit=240
+```
+
+### Query Parameters
+
+| Name | Required | Description |
+| --- | --- | --- |
+| `market` | yes | 市场，取值 `sh` / `sz` / `bj` |
+| `symbol` | yes | 6 位证券代码，例如 `600519` |
+| `date` | no | 交易日，`YYYY-MM-DD` 或 `YYYYMMDD`；不能和 `since` / `until` 同用 |
+| `since` | no | 起始时间；和 `until` 成对使用 |
+| `until` | no | 截止时间；和 `since` 成对使用 |
+| `limit` | no | 最大返回点数，默认 `1000`，最大 `10000` |
+
+必须提供 `date`，或同时提供 `since` 和 `until`。
+
+### Response
+
+```json
+{
+  "query": {
+    "market": "sh",
+    "symbol": "600519",
+    "date": "2026-06-05",
+    "limit": 240
+  },
+  "points": [
+    {
+      "market": "sh",
+      "symbol": "600519",
+      "trade_date": "2026-06-05",
+      "point_time": "2026-06-05T09:30:00+08:00",
+      "point_index": 0,
+      "price": 12.34,
+      "volume": 100
+    }
+  ]
+}
+```
+
+合法查询没有数据时返回：
+
+```json
+{
+  "query": {
+    "market": "sh",
+    "symbol": "600519",
+    "date": "2026-06-05",
+    "limit": 240
+  },
+  "points": []
 }
 ```
 

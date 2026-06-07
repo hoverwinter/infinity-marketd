@@ -158,6 +158,8 @@ ClickHouse-backed /api/v1
 - `/api/tdx/*` endpoint 返回 live upstream response。
 - 这些命令和 endpoint 不写入 ClickHouse。
 - 现有 canonical fact tables 仍以本地 TDX 文件导入的 `.day`、`.lc1`、`.1`、`.lc5`、`.5` 为主。
+- `client-local` 参考数据由独立 import 命令写入，例如 `import-tdx-gbbq`、`import-tdx-block`、`import-tdx-ex-daily`；这些命令读取本机 TDX 客户端文件，不连接 TDX server。
+- 在线 `hq-xdxr` 可用于校验 `gbbq`，在线 `hq-block` 可用于校验系统板块，在线 `exquote-bars` 可用于校验扩展行情日线，但这些 provider reads 不会隐式写入 client-local reference tables。
 - 实时快照、高频分笔、F10、板块、财务摘要等如需落库，应先单独设计 schema、逻辑键、分区、去重、保留周期和查询 contract。
 
 这也意味着 `/api/v1` 的 ClickHouse-backed 查询能力不应直接混入 live TDX upstream 请求。对外暴露在线 TDX 能力时，使用独立 provider API 边界：

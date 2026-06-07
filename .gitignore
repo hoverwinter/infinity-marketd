@@ -1,2 +1,4 @@
 data/*
 .env
+web/console/dist/
+web/console/node_modules/

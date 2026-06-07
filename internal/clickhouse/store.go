@@ -2,6 +2,7 @@ package clickhouse
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -262,6 +263,273 @@ func (s *Store) InsertGPMetricDictionary(ctx context.Context, rows []model.GPMet
 	return batch.Send()
 }
 
+func (s *Store) InsertIntradayPoints(ctx context.Context, points []model.IntradayPoint) error {
+	if len(points) == 0 {
+		return nil
+	}
+	for start := 0; start < len(points); {
+		partitions := map[string]struct{}{minutePartitionKey(points[start].TradeDate): {}}
+		end := start + 1
+		for end < len(points) {
+			partition := minutePartitionKey(points[end].TradeDate)
+			if _, exists := partitions[partition]; !exists && len(partitions) >= maxPartitionsPerInsertBlock {
+				break
+			}
+			partitions[partition] = struct{}{}
+			end++
+		}
+		if err := s.insertIntradayPointsBatch(ctx, points[start:end]); err != nil {
+			return err
+		}
+		start = end
+	}
+	return nil
+}
+
+func (s *Store) insertIntradayPointsBatch(ctx context.Context, points []model.IntradayPoint) error {
+	target, err := tableName(s.marketDB, "a_share_intraday_points")
+	if err != nil {
+		return err
+	}
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO "+target+" (market, symbol, trade_date, point_time, point_index, price, volume) VALUES")
+	if err != nil {
+		return err
+	}
+	for _, point := range points {
+		if err := batch.Append(point.Market, point.Symbol, point.TradeDate, point.PointTime, point.PointIndex, point.Price, point.Volume); err != nil {
+			return err
+		}
+	}
+	return batch.Send()
+}
+
+func (s *Store) InsertXDXREvents(ctx context.Context, events []model.XDXREvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	table, err := tableName(s.marketDB, "a_share_xdxr_events")
+	if err != nil {
+		return err
+	}
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO "+table+" (market, symbol, event_date, category, category_name, fenhong, peigujia, songzhuangu, peigu, suogu, panqianliutong, panhouliutong, qianzongguben, houzongguben, fenshu, xingquanjia) VALUES")
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if err := batch.Append(event.Market, event.Symbol, event.EventDate, event.Category, event.CategoryName, event.FenHong, event.PeiGuJia, event.SongZhuanGu, event.PeiGu, event.SuoGu, event.PanQianLiuTong, event.PanHouLiuTong, event.QianZongGuBen, event.HouZongGuBen, event.FenShu, event.XingQuanJia); err != nil {
+			return err
+		}
+	}
+	return batch.Send()
+}
+
+func (s *Store) InsertAdjustFactors(ctx context.Context, factors []model.AdjustFactor) error {
+	if len(factors) == 0 {
+		return nil
+	}
+	table, err := tableName(s.marketDB, "a_share_adjust_factors_1d")
+	if err != nil {
+		return err
+	}
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO "+table+" (market, symbol, trade_date, qfq_factor, hfq_factor, computed_at) VALUES")
+	if err != nil {
+		return err
+	}
+	for _, factor := range factors {
+		computedAt := factor.ComputedAt
+		if computedAt.IsZero() {
+			computedAt = time.Now()
+		}
+		if err := batch.Append(factor.Market, factor.Symbol, factor.TradeDate, factor.QFQFactor, factor.HFQFactor, computedAt); err != nil {
+			return err
+		}
+	}
+	return batch.Send()
+}
+
+func (s *Store) InsertCapitalChangeEvents(ctx context.Context, events []model.CapitalChangeEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	table, err := tableName(s.marketDB, "a_share_capital_change_events")
+	if err != nil {
+		return err
+	}
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO "+table+" (market, symbol, event_date, category, event_seq, event_name, cash_dividend, allotment_price, bonus_shares, allotment_shares, shrink_shares, pre_float_shares, post_float_shares, pre_total_shares, post_total_shares, ratio_denominator, exercise_price) VALUES")
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if err := batch.Append(event.Market, event.Symbol, event.EventDate, event.Category, event.EventSeq, event.EventName, event.CashDividend, event.AllotmentPrice, event.BonusShares, event.AllotmentShares, event.ShrinkShares, event.PreFloatShares, event.PostFloatShares, event.PreTotalShares, event.PostTotalShares, event.RatioDenominator, event.ExercisePrice); err != nil {
+			return err
+		}
+	}
+	return batch.Send()
+}
+
+func (s *Store) InsertTDXBlockSnapshots(ctx context.Context, snapshots []model.TDXBlockSnapshot) error {
+	if len(snapshots) == 0 {
+		return nil
+	}
+	table, err := tableName(s.marketDB, "tdx_block_snapshots")
+	if err != nil {
+		return err
+	}
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO "+table+" (snapshot_id, block_scope, snapshot_time, content_hash, block_count, member_count) VALUES")
+	if err != nil {
+		return err
+	}
+	for _, snapshot := range snapshots {
+		if err := batch.Append(snapshot.SnapshotID, snapshot.BlockScope, snapshot.SnapshotTime, snapshot.ContentHash, snapshot.BlockCount, snapshot.MemberCount); err != nil {
+			return err
+		}
+	}
+	return batch.Send()
+}
+
+func (s *Store) InsertTDXBlockDefinitions(ctx context.Context, definitions []model.TDXBlockDefinition) error {
+	if len(definitions) == 0 {
+		return nil
+	}
+	table, err := tableName(s.marketDB, "tdx_block_definitions")
+	if err != nil {
+		return err
+	}
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO "+table+" (snapshot_id, block_scope, block_kind, block_id, block_name, block_type, display_order, member_count) VALUES")
+	if err != nil {
+		return err
+	}
+	for _, def := range definitions {
+		if err := batch.Append(def.SnapshotID, def.BlockScope, def.BlockKind, def.BlockID, def.BlockName, def.BlockType, def.DisplayOrder, def.MemberCount); err != nil {
+			return err
+		}
+	}
+	return batch.Send()
+}
+
+func (s *Store) InsertTDXBlockMemberships(ctx context.Context, memberships []model.TDXBlockMembership) error {
+	if len(memberships) == 0 {
+		return nil
+	}
+	table, err := tableName(s.marketDB, "tdx_block_memberships")
+	if err != nil {
+		return err
+	}
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO "+table+" (snapshot_id, block_scope, block_id, member_order, code, market, symbol) VALUES")
+	if err != nil {
+		return err
+	}
+	for _, member := range memberships {
+		if err := batch.Append(member.SnapshotID, member.BlockScope, member.BlockID, member.MemberOrder, member.Code, member.Market, member.Symbol); err != nil {
+			return err
+		}
+	}
+	return batch.Send()
+}
+
+func (s *Store) InsertExDailyBars(ctx context.Context, bars []model.ExDailyBar) error {
+	if len(bars) == 0 {
+		return nil
+	}
+	table, err := tableName(s.marketDB, "tdx_ex_bars_1d")
+	if err != nil {
+		return err
+	}
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO "+table+" (ex_market, code, trade_date, open, high, low, close, position, trade, price, amount, settlement_price) VALUES")
+	if err != nil {
+		return err
+	}
+	for _, bar := range bars {
+		if err := batch.Append(bar.ExMarket, bar.Code, bar.TradeDate, bar.Open, bar.High, bar.Low, bar.Close, bar.Position, bar.Trade, bar.Price, bar.Amount, bar.SettlementPrice); err != nil {
+			return err
+		}
+	}
+	return batch.Send()
+}
+
+func (s *Store) DailyBarsForSymbol(ctx context.Context, market string, symbol string) ([]model.DailyBar, error) {
+	table, err := tableName(s.marketDB, "a_share_bars_1d")
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.conn.Query(ctx, fmt.Sprintf("SELECT market, symbol, trade_date, open, high, low, close, volume, amount FROM %s FINAL WHERE market = ? AND symbol = ? ORDER BY trade_date ASC", table), market, symbol)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var bars []model.DailyBar
+	for rows.Next() {
+		var bar model.DailyBar
+		if err := rows.Scan(&bar.Market, &bar.Symbol, &bar.TradeDate, &bar.Open, &bar.High, &bar.Low, &bar.Close, &bar.Volume, &bar.Amount); err != nil {
+			return nil, err
+		}
+		bars = append(bars, bar)
+	}
+	return bars, rows.Err()
+}
+
+func (s *Store) DailySymbols(ctx context.Context, market string) ([]model.Symbol, error) {
+	table, err := tableName(s.marketDB, "a_share_bars_1d")
+	if err != nil {
+		return nil, err
+	}
+	where := ""
+	var args []any
+	if market != "" {
+		where = " WHERE market = ?"
+		args = append(args, market)
+	}
+	rows, err := s.conn.Query(ctx, fmt.Sprintf("SELECT market, symbol FROM %s%s GROUP BY market, symbol ORDER BY market, symbol", table, where), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var symbols []model.Symbol
+	for rows.Next() {
+		var item model.Symbol
+		if err := rows.Scan(&item.Market, &item.Symbol); err != nil {
+			return nil, err
+		}
+		symbols = append(symbols, item)
+	}
+	return symbols, rows.Err()
+}
+
+func (s *Store) XDXREventsForSymbol(ctx context.Context, market string, symbol string) ([]model.XDXREvent, error) {
+	table, err := tableName(s.marketDB, "a_share_xdxr_events")
+	if err != nil {
+		return nil, err
+	}
+	columns := "market, symbol, event_date, category, category_name, fenhong, peigujia, songzhuangu, peigu, suogu, panqianliutong, panhouliutong, qianzongguben, houzongguben, fenshu, xingquanjia"
+	rows, err := s.conn.Query(ctx, fmt.Sprintf("SELECT %s FROM %s FINAL WHERE market = ? AND symbol = ? ORDER BY event_date ASC, category ASC", columns, table), market, symbol)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []model.XDXREvent
+	for rows.Next() {
+		var event model.XDXREvent
+		var fenHong, peiGuJia, songZhuanGu, peiGu, suoGu sql.NullFloat64
+		var panQian, panHou, qianZong, houZong, fenShu, xingQuan sql.NullFloat64
+		if err := rows.Scan(&event.Market, &event.Symbol, &event.EventDate, &event.Category, &event.CategoryName, &fenHong, &peiGuJia, &songZhuanGu, &peiGu, &suoGu, &panQian, &panHou, &qianZong, &houZong, &fenShu, &xingQuan); err != nil {
+			return nil, err
+		}
+		event.FenHong = nullFloatPtr(fenHong)
+		event.PeiGuJia = nullFloatPtr(peiGuJia)
+		event.SongZhuanGu = nullFloatPtr(songZhuanGu)
+		event.PeiGu = nullFloatPtr(peiGu)
+		event.SuoGu = nullFloatPtr(suoGu)
+		event.PanQianLiuTong = nullFloatPtr(panQian)
+		event.PanHouLiuTong = nullFloatPtr(panHou)
+		event.QianZongGuBen = nullFloatPtr(qianZong)
+		event.HouZongGuBen = nullFloatPtr(houZong)
+		event.FenShu = nullFloatPtr(fenShu)
+		event.XingQuanJia = nullFloatPtr(xingQuan)
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
 func (s *Store) InsertTaskRun(ctx context.Context, run model.TaskRun) error {
 	return s.InsertTaskRuns(ctx, []model.TaskRun{run})
 }
@@ -356,6 +624,13 @@ func nullableString(value string) any {
 		return nil
 	}
 	return value
+}
+
+func nullFloatPtr(value sql.NullFloat64) *float64 {
+	if !value.Valid {
+		return nil
+	}
+	return &value.Float64
 }
 
 func issueID(issue model.QualityIssue) string {

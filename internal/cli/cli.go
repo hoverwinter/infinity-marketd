@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,10 +14,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hoverwinter/infinity-marketd/internal/adjust"
 	chstore "github.com/hoverwinter/infinity-marketd/internal/clickhouse"
 	"github.com/hoverwinter/infinity-marketd/internal/config"
 	"github.com/hoverwinter/infinity-marketd/internal/ingest"
 	"github.com/hoverwinter/infinity-marketd/internal/logging"
+	"github.com/hoverwinter/infinity-marketd/internal/model"
 	"github.com/hoverwinter/infinity-marketd/internal/tdx"
 )
 
@@ -68,6 +72,16 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runImportTDXFinancial(ctx, args[1:], stdout, stderr)
 	case "import-tdx-gp":
 		return runImportTDXGP(ctx, args[1:], stdout, stderr)
+	case "import-tdx-intraday-points":
+		return runImportIntradayPoints(ctx, args[1:], stdout, stderr)
+	case "import-tdx-gbbq":
+		return runImportGBBQ(ctx, args[1:], stdout, stderr)
+	case "import-tdx-block":
+		return runImportTDXBlock(ctx, args[1:], stdout, stderr)
+	case "import-tdx-ex-daily":
+		return runImportExDaily(ctx, args[1:], stdout, stderr)
+	case "write-tdx-custom-block":
+		return runWriteCustomBlock(args[1:], stdout, stderr)
 	case "quote":
 		return runQuote(ctx, args[1:], stdout, stderr)
 	case "quote-probe":
@@ -94,6 +108,10 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runHQCompanyContent(ctx, args[1:], stdout, stderr)
 	case "hq-xdxr":
 		return runHQXDXR(ctx, args[1:], stdout, stderr)
+	case "refresh-tdx-xdxr":
+		return runRefreshTDXXDXR(ctx, args[1:], stdout, stderr)
+	case "refresh-adjust-factors":
+		return runRefreshAdjustFactors(ctx, args[1:], stdout, stderr)
 	case "hq-finance":
 		return runHQFinance(ctx, args[1:], stdout, stderr)
 	case "hq-block-meta":
@@ -595,6 +613,373 @@ func runHQXDXR(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 		return 1
 	}
 	return writeJSON(stdout, stderr, rows)
+}
+
+type refreshSummary struct {
+	RunID         string
+	Dataset       string
+	TargetTable   string
+	Asset         string
+	MinWatermark  *time.Time
+	MaxWatermark  *time.Time
+	RowsWritten   uint64
+	QualityIssues int
+	DryRun        bool
+}
+
+func runRefreshTDXXDXR(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
+	var servers listFlags
+	var market string
+	var symbol string
+	var all bool
+	var limit int
+	var offset int
+	var dryRun bool
+	fs := newFlagSet("refresh-tdx-xdxr", stderr)
+	config.RegisterCommonFlags(fs, &overrides)
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	fs.BoolVar(&all, "all", false, "refresh xdxr for all symbols present in daily bars")
+	fs.IntVar(&limit, "limit", 0, "maximum symbols to process in --all mode")
+	fs.IntVar(&offset, "offset", 0, "symbols to skip in --all mode")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	fs.BoolVar(&dryRun, "dry-run", false, "fetch and normalize without writing ClickHouse")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if all {
+		return runRefreshTDXXDXRAll(ctx, stdout, stderr, overrides, market, []string(servers), limit, offset, dryRun)
+	}
+	req, err := tdx.ParseHQMinuteRequest(market, symbol)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	runID := newLocalRunID()
+	started := time.Now()
+	rows, err := fetchHQXDXRInfo(ctx, req, hqClientOptions([]string(servers)))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	events, adjustIssues := adjust.NormalizeXDXR(rows)
+	summary := refreshSummary{
+		RunID:         runID,
+		Dataset:       "a_share_xdxr_events",
+		TargetTable:   "a_share_xdxr_events",
+		Asset:         req.Market + ":" + req.Symbol,
+		MinWatermark:  xdxrMinDate(events),
+		MaxWatermark:  xdxrMaxDate(events),
+		RowsWritten:   uint64(len(events)),
+		QualityIssues: len(adjustIssues),
+		DryRun:        dryRun,
+	}
+	if dryRun {
+		printRefreshSummary(stdout, summary)
+		return 0
+	}
+	cfg, err := config.Load(overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	store, err := chstore.Open(ctx, cfg.ClickHouse)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer store.Close()
+	if err := store.InsertXDXREvents(ctx, events); err != nil {
+		recordRefreshFailure(ctx, store, summary, "tdx_xdxr_refresh", "tdx.hq.xdxr", started, err)
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	qualityIssues := qualityIssuesFromAdjust(runID, summary.Dataset, adjustIssues)
+	if err := store.InsertQualityIssues(ctx, qualityIssues); err != nil {
+		recordRefreshFailure(ctx, store, summary, "tdx_xdxr_refresh", "tdx.hq.xdxr", started, err)
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if err := recordRefreshSuccess(ctx, store, summary, "tdx_xdxr_refresh", "tdx.hq.xdxr", started, "ok"); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printRefreshSummary(stdout, summary)
+	return 0
+}
+
+func runRefreshAdjustFactors(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
+	var market string
+	var symbol string
+	var all bool
+	var limit int
+	var offset int
+	var dryRun bool
+	fs := newFlagSet("refresh-adjust-factors", stderr)
+	config.RegisterCommonFlags(fs, &overrides)
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	fs.BoolVar(&all, "all", false, "refresh adjustment factors for all symbols present in daily bars")
+	fs.IntVar(&limit, "limit", 0, "maximum symbols to process in --all mode")
+	fs.IntVar(&offset, "offset", 0, "symbols to skip in --all mode")
+	fs.BoolVar(&dryRun, "dry-run", false, "calculate factors without writing ClickHouse")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if all {
+		return runRefreshAdjustFactorsAll(ctx, stdout, stderr, overrides, market, limit, offset, dryRun)
+	}
+	req, err := tdx.ParseHQMinuteRequest(market, symbol)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	cfg, err := config.Load(overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	store, err := chstore.Open(ctx, cfg.ClickHouse)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer store.Close()
+	runID := newLocalRunID()
+	started := time.Now()
+	bars, err := store.DailyBarsForSymbol(ctx, req.Market, req.Symbol)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	events, err := store.XDXREventsForSymbol(ctx, req.Market, req.Symbol)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	factors, adjustIssues := adjust.GenerateFactors(bars, events, time.Now())
+	summary := refreshSummary{
+		RunID:         runID,
+		Dataset:       "a_share_adjust_factors_1d",
+		TargetTable:   "a_share_adjust_factors_1d",
+		Asset:         req.Market + ":" + req.Symbol,
+		MinWatermark:  factorMinDate(factors),
+		MaxWatermark:  factorMaxDate(factors),
+		RowsWritten:   uint64(len(factors)),
+		QualityIssues: len(adjustIssues),
+		DryRun:        dryRun,
+	}
+	if dryRun {
+		printRefreshSummary(stdout, summary)
+		return 0
+	}
+	if err := store.InsertAdjustFactors(ctx, factors); err != nil {
+		recordRefreshFailure(ctx, store, summary, "adjust_factor_refresh", "derived.adjust_factors_1d", started, err)
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	qualityIssues := qualityIssuesFromAdjust(runID, summary.Dataset, adjustIssues)
+	if err := store.InsertQualityIssues(ctx, qualityIssues); err != nil {
+		recordRefreshFailure(ctx, store, summary, "adjust_factor_refresh", "derived.adjust_factors_1d", started, err)
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	message := "ok"
+	if len(adjustIssues) > 0 {
+		message = "completed with quality issues"
+	}
+	if err := recordRefreshSuccess(ctx, store, summary, "adjust_factor_refresh", "derived.adjust_factors_1d", started, message); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printRefreshSummary(stdout, summary)
+	return 0
+}
+
+func runRefreshTDXXDXRAll(ctx context.Context, stdout io.Writer, stderr io.Writer, overrides config.Overrides, market string, servers []string, limit int, offset int, dryRun bool) int {
+	if err := validateOptionalMarket(market); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if offset < 0 || limit < 0 {
+		fmt.Fprintln(stderr, "--offset and --limit must be non-negative")
+		return 2
+	}
+	cfg, err := config.Load(overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	store, err := chstore.Open(ctx, cfg.ClickHouse)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer store.Close()
+	symbols, err := store.DailySymbols(ctx, market)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	symbols = sliceSymbols(symbols, offset, limit)
+	total := refreshSummary{RunID: newLocalRunID(), Dataset: "a_share_xdxr_events", TargetTable: "a_share_xdxr_events", Asset: "all", DryRun: dryRun}
+	if market != "" {
+		total.Asset = market + ":all"
+	}
+	opts := hqClientOptions(servers)
+	for i, item := range symbols {
+		req := tdx.HQMinuteRequest{Market: item.Market, Symbol: item.Symbol}
+		runID := newLocalRunID()
+		started := time.Now()
+		rows, err := fetchHQXDXRInfo(ctx, req, opts)
+		if err != nil {
+			total.QualityIssues++
+			fmt.Fprintf(stderr, "xdxr %s:%s: %v\n", item.Market, item.Symbol, err)
+			continue
+		}
+		events, adjustIssues := adjust.NormalizeXDXR(rows)
+		summary := refreshSummary{
+			RunID:         runID,
+			Dataset:       "a_share_xdxr_events",
+			TargetTable:   "a_share_xdxr_events",
+			Asset:         item.Market + ":" + item.Symbol,
+			MinWatermark:  xdxrMinDate(events),
+			MaxWatermark:  xdxrMaxDate(events),
+			RowsWritten:   uint64(len(events)),
+			QualityIssues: len(adjustIssues),
+			DryRun:        dryRun,
+		}
+		total.RowsWritten += summary.RowsWritten
+		total.QualityIssues += summary.QualityIssues
+		if !dryRun {
+			if err := store.InsertXDXREvents(ctx, events); err != nil {
+				recordRefreshFailure(ctx, store, summary, "tdx_xdxr_refresh", "tdx.hq.xdxr", started, err)
+				fmt.Fprintf(stderr, "write xdxr %s: %v\n", summary.Asset, err)
+				return 1
+			}
+			if err := store.InsertQualityIssues(ctx, qualityIssuesFromAdjust(runID, summary.Dataset, adjustIssues)); err != nil {
+				recordRefreshFailure(ctx, store, summary, "tdx_xdxr_refresh", "tdx.hq.xdxr", started, err)
+				fmt.Fprintf(stderr, "quality issues %s: %v\n", summary.Asset, err)
+				return 1
+			}
+			if err := recordRefreshSuccess(ctx, store, summary, "tdx_xdxr_refresh", "tdx.hq.xdxr", started, "ok"); err != nil {
+				fmt.Fprintf(stderr, "ops %s: %v\n", summary.Asset, err)
+				return 1
+			}
+		}
+		if i == 0 || (i+1)%100 == 0 || i+1 == len(symbols) {
+			fmt.Fprintf(stderr, "processed xdxr %d/%d rows=%d issues=%d\n", i+1, len(symbols), total.RowsWritten, total.QualityIssues)
+		}
+	}
+	printRefreshSummary(stdout, total)
+	return 0
+}
+
+func runRefreshAdjustFactorsAll(ctx context.Context, stdout io.Writer, stderr io.Writer, overrides config.Overrides, market string, limit int, offset int, dryRun bool) int {
+	if err := validateOptionalMarket(market); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if offset < 0 || limit < 0 {
+		fmt.Fprintln(stderr, "--offset and --limit must be non-negative")
+		return 2
+	}
+	cfg, err := config.Load(overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	store, err := chstore.Open(ctx, cfg.ClickHouse)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer store.Close()
+	symbols, err := store.DailySymbols(ctx, market)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	symbols = sliceSymbols(symbols, offset, limit)
+	total := refreshSummary{RunID: newLocalRunID(), Dataset: "a_share_adjust_factors_1d", TargetTable: "a_share_adjust_factors_1d", Asset: "all", DryRun: dryRun}
+	if market != "" {
+		total.Asset = market + ":all"
+	}
+	for i, item := range symbols {
+		runID := newLocalRunID()
+		started := time.Now()
+		bars, err := store.DailyBarsForSymbol(ctx, item.Market, item.Symbol)
+		if err != nil {
+			fmt.Fprintf(stderr, "daily bars %s:%s: %v\n", item.Market, item.Symbol, err)
+			return 1
+		}
+		events, err := store.XDXREventsForSymbol(ctx, item.Market, item.Symbol)
+		if err != nil {
+			fmt.Fprintf(stderr, "xdxr events %s:%s: %v\n", item.Market, item.Symbol, err)
+			return 1
+		}
+		factors, adjustIssues := adjust.GenerateFactors(bars, events, time.Now())
+		summary := refreshSummary{
+			RunID:         runID,
+			Dataset:       "a_share_adjust_factors_1d",
+			TargetTable:   "a_share_adjust_factors_1d",
+			Asset:         item.Market + ":" + item.Symbol,
+			MinWatermark:  factorMinDate(factors),
+			MaxWatermark:  factorMaxDate(factors),
+			RowsWritten:   uint64(len(factors)),
+			QualityIssues: len(adjustIssues),
+			DryRun:        dryRun,
+		}
+		total.RowsWritten += summary.RowsWritten
+		total.QualityIssues += summary.QualityIssues
+		if !dryRun {
+			if err := store.InsertAdjustFactors(ctx, factors); err != nil {
+				recordRefreshFailure(ctx, store, summary, "adjust_factor_refresh", "derived.adjust_factors_1d", started, err)
+				fmt.Fprintf(stderr, "write factors %s: %v\n", summary.Asset, err)
+				return 1
+			}
+			if err := store.InsertQualityIssues(ctx, qualityIssuesFromAdjust(runID, summary.Dataset, adjustIssues)); err != nil {
+				recordRefreshFailure(ctx, store, summary, "adjust_factor_refresh", "derived.adjust_factors_1d", started, err)
+				fmt.Fprintf(stderr, "quality issues %s: %v\n", summary.Asset, err)
+				return 1
+			}
+			message := "ok"
+			if len(adjustIssues) > 0 {
+				message = "completed with quality issues"
+			}
+			if err := recordRefreshSuccess(ctx, store, summary, "adjust_factor_refresh", "derived.adjust_factors_1d", started, message); err != nil {
+				fmt.Fprintf(stderr, "ops %s: %v\n", summary.Asset, err)
+				return 1
+			}
+		}
+		if i == 0 || (i+1)%100 == 0 || i+1 == len(symbols) {
+			fmt.Fprintf(stderr, "processed factors %d/%d rows=%d issues=%d\n", i+1, len(symbols), total.RowsWritten, total.QualityIssues)
+		}
+	}
+	printRefreshSummary(stdout, total)
+	return 0
 }
 
 func runHQFinance(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
@@ -1159,6 +1544,73 @@ func runImport(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 	return 0
 }
 
+func runImportIntradayPoints(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
+	var servers listFlags
+	var bestIP bestIPFlags
+	var market, symbol, dateText, since, until string
+	var today bool
+	var dryRun bool
+	fs := newFlagSet("import-tdx-intraday-points", stderr)
+	config.RegisterCommonFlags(fs, &overrides)
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	fs.StringVar(&dateText, "date", "", "historical date YYYY-MM-DD or YYYYMMDD")
+	fs.StringVar(&since, "since", "", "start date YYYY-MM-DD or YYYYMMDD")
+	fs.StringVar(&until, "until", "", "end date YYYY-MM-DD or YYYYMMDD")
+	fs.BoolVar(&today, "today", false, "fetch current-day minute-time data")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	registerBestIPFlags(fs, &bestIP)
+	fs.BoolVar(&dryRun, "dry-run", false, "fetch and summarize without writing")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cfg, err := config.Load(overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	clientOpts, err := quoteClientOptions([]string(servers), cfg.Runtime.BatchSize, "", bestIP)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	var store *chstore.Store
+	if !dryRun {
+		store, err = chstore.Open(ctx, cfg.ClickHouse)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer store.Close()
+	}
+	summary, err := ingest.ImportIntradayPoints(ctx, ingest.IntradayImportOptions{
+		Market:             market,
+		Symbol:             symbol,
+		Date:               dateText,
+		Since:              since,
+		Until:              until,
+		Today:              today,
+		DryRun:             dryRun,
+		Store:              store,
+		Timezone:           cfg.Runtime.Timezone,
+		ClientOptions:      clientOpts,
+		FetchMinuteTime:    fetchHQMinuteTime,
+		FetchHistoryMinute: fetchHQHistoryMinuteTime,
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	printIntradaySummary(stdout, summary)
+	return 0
+}
+
 func runImportVIPDocZip(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	var overrides config.Overrides
 	var file, periodText, market, since, until string
@@ -1334,6 +1786,195 @@ func runImportTDXGP(ctx context.Context, args []string, stdout io.Writer, stderr
 	return 0
 }
 
+func runImportGBBQ(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
+	var file, since, until string
+	var dryRun bool
+	fs := newFlagSet("import-tdx-gbbq", stderr)
+	config.RegisterCommonFlags(fs, &overrides)
+	fs.StringVar(&file, "file", "", "client-local gbbq file")
+	fs.StringVar(&since, "since", "", "start date YYYY-MM-DD")
+	fs.StringVar(&until, "until", "", "end date YYYY-MM-DD")
+	fs.BoolVar(&dryRun, "dry-run", false, "parse and summarize without writing")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(file) == "" {
+		fmt.Fprintln(stderr, "--file is required")
+		return 2
+	}
+	cfg, store, cleanup, ok := loadConfigAndMaybeStore(ctx, overrides, dryRun, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	summary, err := ingest.ImportTDXGBBQ(ctx, ingest.GBBQOptions{File: file, Since: since, Until: until, DryRun: dryRun, Store: store, Timezone: cfg.Runtime.Timezone, BatchSize: cfg.Runtime.BatchSize})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printSummary(stdout, summary)
+	return 0
+}
+
+func runImportTDXBlock(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
+	var file, scope string
+	var dryRun bool
+	fs := newFlagSet("import-tdx-block", stderr)
+	config.RegisterCommonFlags(fs, &overrides)
+	fs.StringVar(&file, "file", "", "client-local system block file or custom blocknew directory")
+	fs.StringVar(&scope, "scope", "system", "block scope: system or custom")
+	fs.BoolVar(&dryRun, "dry-run", false, "parse and summarize without writing")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(file) == "" {
+		fmt.Fprintln(stderr, "--file is required")
+		return 2
+	}
+	cfg, store, cleanup, ok := loadConfigAndMaybeStore(ctx, overrides, dryRun, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	summary, err := ingest.ImportTDXBlock(ctx, ingest.BlockOptions{File: file, Scope: scope, DryRun: dryRun, Store: store, Timezone: cfg.Runtime.Timezone, BatchSize: cfg.Runtime.BatchSize})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printSummary(stdout, summary)
+	return 0
+}
+
+func runImportExDaily(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
+	var file, marketText, code, since, until string
+	var dryRun bool
+	fs := newFlagSet("import-tdx-ex-daily", stderr)
+	config.RegisterCommonFlags(fs, &overrides)
+	fs.StringVar(&file, "file", "", "client-local ex_daily file")
+	fs.StringVar(&marketText, "market", "", "extension market id")
+	fs.StringVar(&code, "code", "", "extension instrument code")
+	fs.StringVar(&since, "since", "", "start date YYYY-MM-DD")
+	fs.StringVar(&until, "until", "", "end date YYYY-MM-DD")
+	fs.BoolVar(&dryRun, "dry-run", false, "parse and summarize without writing")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(file) == "" || strings.TrimSpace(marketText) == "" || strings.TrimSpace(code) == "" {
+		fmt.Fprintln(stderr, "--file, --market, and --code are required")
+		return 2
+	}
+	market, err := tdx.ParseExMarket(marketText)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	cfg, store, cleanup, ok := loadConfigAndMaybeStore(ctx, overrides, dryRun, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	summary, err := ingest.ImportTDXExDaily(ctx, ingest.ExDailyOptions{File: file, Market: market, Code: code, Since: since, Until: until, DryRun: dryRun, Store: store, Timezone: cfg.Runtime.Timezone})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printSummary(stdout, summary)
+	return 0
+}
+
+func runWriteCustomBlock(args []string, stdout io.Writer, stderr io.Writer) int {
+	var file, blockID, addText, removeText, replaceText string
+	var dryRun bool
+	fs := newFlagSet("write-tdx-custom-block", stderr)
+	fs.StringVar(&file, "file", "", "client-local T0002/blocknew directory")
+	fs.StringVar(&blockID, "block-id", "", "custom block id")
+	fs.StringVar(&addText, "add", "", "comma-separated symbols to add")
+	fs.StringVar(&removeText, "remove", "", "comma-separated symbols to remove")
+	fs.StringVar(&replaceText, "replace", "", "comma-separated replacement symbols")
+	fs.BoolVar(&dryRun, "dry-run", false, "print planned result without writing")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(file) == "" || strings.TrimSpace(blockID) == "" {
+		fmt.Fprintln(stderr, "--file and --block-id are required")
+		return 2
+	}
+	parsed, err := tdx.ParseCustomBlockDir(expandHome(file), time.Now())
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	edited, err := tdx.ApplyCustomBlockEdit(parsed, tdx.CustomBlockEdit{BlockID: blockID, Add: splitCSV(addText), Remove: splitCSV(removeText), Replace: splitCSV(replaceText)})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if dryRun {
+		printCustomBlockPlan(stdout, edited, blockID)
+		return 0
+	}
+	if err := tdx.WriteCustomBlockDir(expandHome(file), edited); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printCustomBlockPlan(stdout, edited, blockID)
+	return 0
+}
+
+func loadConfigAndMaybeStore(ctx context.Context, overrides config.Overrides, dryRun bool, stderr io.Writer) (config.Config, *chstore.Store, func(), bool) {
+	cfg, err := config.Load(overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return config.Config{}, nil, func() {}, false
+	}
+	cleanupLogging, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return config.Config{}, nil, func() {}, false
+	}
+	cleanup := cleanupLogging
+	var store *chstore.Store
+	if !dryRun {
+		store, err = chstore.Open(ctx, cfg.ClickHouse)
+		if err != nil {
+			cleanupLogging()
+			fmt.Fprintln(stderr, err)
+			return config.Config{}, nil, func() {}, false
+		}
+		cleanup = func() {
+			_ = store.Close()
+			cleanupLogging()
+		}
+	}
+	return cfg, store, cleanup, true
+}
+
+func splitCSV(value string) []string {
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func printCustomBlockPlan(out io.Writer, parsed tdx.BlockParseResult, blockID string) {
+	fmt.Fprintf(out, "block_id: %s\n", blockID)
+	fmt.Fprintf(out, "snapshot_id: %s\n", parsed.Snapshot.SnapshotID)
+	var count int
+	for _, member := range parsed.Memberships {
+		if member.BlockID == blockID {
+			count++
+			fmt.Fprintf(out, "- %s:%s\n", member.Market, member.Symbol)
+		}
+	}
+	fmt.Fprintf(out, "members: %d\n", count)
+}
+
 type bulkImportOptions struct {
 	Period    tdx.Period
 	Root      string
@@ -1456,6 +2097,24 @@ func printSummary(out io.Writer, summary ingest.Summary) {
 	}
 }
 
+func printIntradaySummary(out io.Writer, summary ingest.IntradaySummary) {
+	mode := "write"
+	if summary.DryRun {
+		mode = "dry-run"
+	}
+	fmt.Fprintf(out, "mode: %s\n", mode)
+	fmt.Fprintf(out, "run_id: %s\n", summary.RunID)
+	fmt.Fprintf(out, "dataset: %s\n", summary.Dataset)
+	fmt.Fprintf(out, "target_table: %s\n", summary.TargetTable)
+	fmt.Fprintf(out, "market: %s\n", summary.Market)
+	fmt.Fprintf(out, "symbol: %s\n", summary.Symbol)
+	fmt.Fprintf(out, "dates_fetched: %d\n", summary.DatesFetched)
+	fmt.Fprintf(out, "empty_dates: %d\n", summary.EmptyDates)
+	fmt.Fprintf(out, "rows_written: %d\n", summary.RowsWritten)
+	fmt.Fprintf(out, "rows_skipped: %d\n", summary.RowsSkipped)
+	fmt.Fprintf(out, "quality_issues: %d\n", len(summary.Issues))
+}
+
 func printBulkSummary(out io.Writer, summary bulkImportSummary) {
 	mode := "write"
 	if summary.DryRun {
@@ -1508,6 +2167,186 @@ func printTDXFinancialSummary(out io.Writer, summary ingest.TDXFinancialSummary)
 	fmt.Fprintf(out, "quality_issues: %d\n", summary.QualityIssues)
 }
 
+func printRefreshSummary(out io.Writer, summary refreshSummary) {
+	mode := "write"
+	if summary.DryRun {
+		mode = "dry-run"
+	}
+	fmt.Fprintf(out, "run_id: %s\n", summary.RunID)
+	fmt.Fprintf(out, "mode: %s\n", mode)
+	fmt.Fprintf(out, "dataset: %s\n", summary.Dataset)
+	fmt.Fprintf(out, "target_table: %s\n", summary.TargetTable)
+	fmt.Fprintf(out, "asset: %s\n", summary.Asset)
+	fmt.Fprintf(out, "rows_written: %d\n", summary.RowsWritten)
+	fmt.Fprintf(out, "quality_issues: %d\n", summary.QualityIssues)
+}
+
+func recordRefreshSuccess(ctx context.Context, store *chstore.Store, summary refreshSummary, taskType string, inputFormat string, started time.Time, message string) error {
+	now := time.Now()
+	duration := uint64(now.Sub(started).Milliseconds())
+	status := "success"
+	if summary.QualityIssues > 0 {
+		status = "degraded"
+	}
+	if err := store.InsertWatermark(ctx, model.Watermark{
+		Dataset:      summary.Dataset,
+		Asset:        summary.Asset,
+		Status:       status,
+		MinWatermark: summary.MinWatermark,
+		MaxWatermark: summary.MaxWatermark,
+		RowsWritten:  summary.RowsWritten,
+		Message:      message,
+		UpdatedAt:    now,
+	}); err != nil {
+		return err
+	}
+	return store.InsertTaskRun(ctx, model.TaskRun{
+		RunID:       summary.RunID,
+		Dataset:     summary.Dataset,
+		TaskType:    taskType,
+		Status:      status,
+		TargetTable: summary.TargetTable,
+		InputFormat: inputFormat,
+		Params:      "asset=" + summary.Asset,
+		StartedAt:   started,
+		FinishedAt:  &now,
+		DurationMS:  &duration,
+		RowsWritten: summary.RowsWritten,
+		UpdatedAt:   now,
+	})
+}
+
+func recordRefreshFailure(ctx context.Context, store *chstore.Store, summary refreshSummary, taskType string, inputFormat string, started time.Time, err error) {
+	now := time.Now()
+	duration := uint64(now.Sub(started).Milliseconds())
+	_ = store.InsertTaskRun(ctx, model.TaskRun{
+		RunID:       summary.RunID,
+		Dataset:     summary.Dataset,
+		TaskType:    taskType,
+		Status:      "failed",
+		TargetTable: summary.TargetTable,
+		InputFormat: inputFormat,
+		Params:      "asset=" + summary.Asset,
+		StartedAt:   started,
+		FinishedAt:  &now,
+		DurationMS:  &duration,
+		RowsWritten: summary.RowsWritten,
+		Error:       err.Error(),
+		UpdatedAt:   now,
+	})
+}
+
+func qualityIssuesFromAdjust(runID string, dataset string, issues []adjust.Issue) []model.QualityIssue {
+	if len(issues) == 0 {
+		return nil
+	}
+	now := time.Now()
+	out := make([]model.QualityIssue, 0, len(issues))
+	for _, issue := range issues {
+		logicalKey := issue.Market + ":" + issue.Symbol
+		if !issue.TradeDate.IsZero() {
+			logicalKey += ":" + issue.TradeDate.Format("2006-01-02")
+		}
+		severity := "warning"
+		switch issue.Type {
+		case "missing_previous_close", "missing_xdxr_fields", "invalid_xdxr_denominator", "invalid_adjust_ratio", "zero_daily_bars":
+			severity = "error"
+		}
+		out = append(out, model.QualityIssue{
+			RunID:      runID,
+			Dataset:    dataset,
+			Severity:   severity,
+			IssueType:  issue.Type,
+			Market:     issue.Market,
+			Symbol:     issue.Symbol,
+			LogicalKey: logicalKey,
+			ObservedAt: now,
+			Message:    issue.Message,
+		})
+	}
+	return out
+}
+
+func xdxrMinDate(events []model.XDXREvent) *time.Time {
+	if len(events) == 0 {
+		return nil
+	}
+	min := events[0].EventDate
+	for _, event := range events[1:] {
+		if event.EventDate.Before(min) {
+			min = event.EventDate
+		}
+	}
+	return &min
+}
+
+func xdxrMaxDate(events []model.XDXREvent) *time.Time {
+	if len(events) == 0 {
+		return nil
+	}
+	max := events[0].EventDate
+	for _, event := range events[1:] {
+		if event.EventDate.After(max) {
+			max = event.EventDate
+		}
+	}
+	return &max
+}
+
+func factorMinDate(factors []model.AdjustFactor) *time.Time {
+	if len(factors) == 0 {
+		return nil
+	}
+	min := factors[0].TradeDate
+	for _, factor := range factors[1:] {
+		if factor.TradeDate.Before(min) {
+			min = factor.TradeDate
+		}
+	}
+	return &min
+}
+
+func factorMaxDate(factors []model.AdjustFactor) *time.Time {
+	if len(factors) == 0 {
+		return nil
+	}
+	max := factors[0].TradeDate
+	for _, factor := range factors[1:] {
+		if factor.TradeDate.After(max) {
+			max = factor.TradeDate
+		}
+	}
+	return &max
+}
+
+func validateOptionalMarket(market string) error {
+	switch strings.TrimSpace(market) {
+	case "", "sh", "sz", "bj":
+		return nil
+	default:
+		return fmt.Errorf("market must be sh, sz, or bj")
+	}
+}
+
+func sliceSymbols(symbols []model.Symbol, offset int, limit int) []model.Symbol {
+	if offset >= len(symbols) {
+		return nil
+	}
+	symbols = symbols[offset:]
+	if limit > 0 && limit < len(symbols) {
+		return symbols[:limit]
+	}
+	return symbols
+}
+
+func newLocalRunID() string {
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(raw[:])
+}
+
 func setupLogging(cfg config.Config, stderr io.Writer) (func(), bool) {
 	_, cleanup, err := logging.InitGlobal(cfg.Logging)
 	if err != nil {
@@ -1538,6 +2377,11 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  import-tdx-vipdoc-zip")
 	fmt.Fprintln(out, "  import-tdx-fin")
 	fmt.Fprintln(out, "  import-tdx-gp")
+	fmt.Fprintln(out, "  import-tdx-intraday-points")
+	fmt.Fprintln(out, "  import-tdx-gbbq")
+	fmt.Fprintln(out, "  import-tdx-block")
+	fmt.Fprintln(out, "  import-tdx-ex-daily")
+	fmt.Fprintln(out, "  write-tdx-custom-block")
 	fmt.Fprintln(out, "  quote")
 	fmt.Fprintln(out, "  quote-probe")
 	fmt.Fprintln(out, "  quote-bestip")
@@ -1551,6 +2395,8 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  hq-company-categories")
 	fmt.Fprintln(out, "  hq-company-content")
 	fmt.Fprintln(out, "  hq-xdxr")
+	fmt.Fprintln(out, "  refresh-tdx-xdxr")
+	fmt.Fprintln(out, "  refresh-adjust-factors")
 	fmt.Fprintln(out, "  hq-finance")
 	fmt.Fprintln(out, "  hq-block-meta")
 	fmt.Fprintln(out, "  hq-block")

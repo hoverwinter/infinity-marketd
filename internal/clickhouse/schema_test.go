@@ -21,48 +21,81 @@ func TestBootstrapDDL(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_gp_metric_values",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.tdx_financial_item_dictionary",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.tdx_gp_metric_dictionary",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_intraday_points",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_daily_derived",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_xdxr_events",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_adjust_factors_1d",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_capital_change_events",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.tdx_block_snapshots",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.tdx_block_definitions",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.tdx_block_memberships",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.tdx_ex_bars_1d",
 		"CREATE TABLE IF NOT EXISTS `infinity_ops`.watermarks",
+		"point_time DateTime('Asia/Shanghai')",
+		"point_index UInt16",
 		"ENGINE = ReplacingMergeTree",
 		"PARTITION BY toYear(trade_date)",
-		"PARTITION BY toYYYYMM(trade_date)",
-		"PARTITION BY toYear(report_date)",
 		"PARTITION BY toYear(event_date)",
+		"PARTITION BY toYYYYMM(snapshot_time)",
+		"PARTITION BY toYYYYMM(trade_date)",
 		"ORDER BY (market, symbol, trade_date)",
 		"ORDER BY (market, symbol, bar_time)",
 		"ORDER BY (market, symbol, report_date, item_id)",
 		"ORDER BY (market, symbol, metric_type, event_date)",
 		"ORDER BY (item_id)",
 		"ORDER BY (metric_type)",
+		"ORDER BY (market, symbol, trade_date, point_time)",
+		"ORDER BY (market, symbol, event_date, category)",
+		"ORDER BY (market, symbol, event_date, category, event_seq)",
+		"ORDER BY (block_scope, snapshot_time, snapshot_id)",
+		"ORDER BY (snapshot_id, block_scope, block_id)",
+		"ORDER BY (snapshot_id, block_scope, block_id, market, symbol, member_order)",
+		"ORDER BY (ex_market, code, trade_date)",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("DDL missing %q\n%s", want, joined)
 		}
 	}
+	for _, forbiddenTable := range []string{"a_share_bars_1d_qfq", "a_share_bars_1d_hfq", "a_share_bars_1m_qfq", "a_share_bars_5m_hfq"} {
+		if strings.Contains(joined, forbiddenTable) {
+			t.Fatalf("DDL creates adjusted K-line table %q\n%s", forbiddenTable, joined)
+		}
+	}
 	marketDDL := ddl[2] + ddl[3] + ddl[4]
-	for _, forbidden := range []string{"source_key", "source_file", "version UInt64", "updated_at", "pct_chg"} {
+	for _, forbidden := range []string{"source_key", "source_file", "version UInt64", "updated_at", "pct_chg", "fenhong", "peigu", "songzhuangu", "suogu"} {
 		if strings.Contains(marketDDL, forbidden) {
 			t.Fatalf("market DDL contains %q\n%s", forbidden, marketDDL)
 		}
 	}
-
-	financialRawDDL := ""
-	gpMetricDDL := ""
+	intradayDDL := ""
 	for _, stmt := range ddl {
-		if strings.Contains(stmt, "a_share_financial_raw_items") {
-			financialRawDDL = stmt
-		}
-		if strings.Contains(stmt, "a_share_gp_metric_values") {
-			gpMetricDDL = stmt
+		if strings.Contains(stmt, "a_share_intraday_points") {
+			intradayDDL = stmt
+			break
 		}
 	}
-	if financialRawDDL == "" || gpMetricDDL == "" {
-		t.Fatal("missing financial raw DDL")
+	if intradayDDL == "" {
+		t.Fatal("missing intraday DDL")
 	}
-	for _, stmt := range []string{financialRawDDL, gpMetricDDL} {
+	for _, forbidden := range []string{"open ", "high ", "low ", "close ", "amount", "period", "bar_interval", "source_key", "source_file", "version UInt64", "updated_at"} {
+		if strings.Contains(intradayDDL, forbidden) {
+			t.Fatalf("intraday DDL contains %q\n%s", forbidden, intradayDDL)
+		}
+	}
+	for _, table := range []string{"a_share_capital_change_events", "tdx_ex_bars_1d", "a_share_financial_raw_items", "a_share_gp_metric_values"} {
+		tableDDL := ""
+		for _, stmt := range ddl {
+			if strings.Contains(stmt, table) {
+				tableDDL = stmt
+				break
+			}
+		}
+		if tableDDL == "" {
+			t.Fatalf("missing %s DDL", table)
+		}
 		for _, forbidden := range []string{"source_key", "source_file", "version UInt64", "updated_at"} {
-			if strings.Contains(stmt, forbidden) {
-				t.Fatalf("financial raw DDL contains %q\n%s", forbidden, stmt)
+			if strings.Contains(tableDDL, forbidden) {
+				t.Fatalf("%s DDL contains %q\n%s", table, forbidden, tableDDL)
 			}
 		}
 	}

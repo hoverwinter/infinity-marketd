@@ -161,6 +161,55 @@ func TestImportTDXFinancialMissingFile(t *testing.T) {
 	}
 }
 
+func TestClientLocalImportDryRunCommands(t *testing.T) {
+	root := t.TempDir()
+	gbbqPath := filepath.Join(root, "gbbq")
+	gbbq := make([]byte, 4)
+	binary.LittleEndian.PutUint32(gbbq[:4], 1)
+	gbbq = append(gbbq, cliGBBQRecord(1, "600519", 20260605, 1)...)
+	writeFile(t, gbbqPath, gbbq)
+
+	blockPath := filepath.Join(root, "block.dat")
+	writeFile(t, blockPath, cliBlockFile())
+
+	exPath := filepath.Join(root, "L001", "29#A1801.day")
+	writeFile(t, exPath, cliExDailyRecord())
+
+	customDir := filepath.Join(root, "T0002", "blocknew")
+	writeFile(t, filepath.Join(customDir, "blocknew.cfg"), append(fixedCLIBytes([]byte("Watch"), 50), fixedCLIBytes([]byte("watch"), 70)...))
+	writeFile(t, filepath.Join(customDir, "watch.blk"), []byte("1600519\n"))
+
+	tests := [][]string{
+		{"import-tdx-gbbq", "--file", gbbqPath, "--dry-run"},
+		{"import-tdx-block", "--file", blockPath, "--scope", "system", "--dry-run"},
+		{"import-tdx-block", "--file", customDir, "--scope", "custom", "--dry-run"},
+		{"import-tdx-ex-daily", "--file", exPath, "--market", "29", "--code", "A1801", "--dry-run"},
+		{"write-tdx-custom-block", "--file", customDir, "--block-id", "watch", "--add", "000001", "--dry-run"},
+	}
+	for _, args := range tests {
+		var out bytes.Buffer
+		var errOut bytes.Buffer
+		code := Run(context.Background(), args, &out, &errOut)
+		if code != 0 {
+			t.Fatalf("%v exit %d stderr=%s stdout=%s", args, code, errOut.String(), out.String())
+		}
+		if out.Len() == 0 {
+			t.Fatalf("%v produced no output", args)
+		}
+	}
+}
+
+func TestClientLocalImportRejectsOfflinePackage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hsjday.zip")
+	writeFile(t, path, []byte("zip"))
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"import-tdx-gbbq", "--file", path, "--dry-run"}, &out, &errOut)
+	if code == 0 || !strings.Contains(errOut.String(), "offline package") {
+		t.Fatalf("exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+}
+
 func TestQuoteCommandEmitsJSONAndUsesServerOverride(t *testing.T) {
 	original := fetchRealtimeQuotes
 	defer func() { fetchRealtimeQuotes = original }()
@@ -533,6 +582,89 @@ func TestHQReadCommandsUseStubbedWorkflows(t *testing.T) {
 	}
 }
 
+func TestImportTDXIntradayPointsDryRun(t *testing.T) {
+	origMinute := fetchHQMinuteTime
+	origHistoryMinute := fetchHQHistoryMinuteTime
+	defer func() {
+		fetchHQMinuteTime = origMinute
+		fetchHQHistoryMinuteTime = origHistoryMinute
+	}()
+
+	var historyDates []int
+	fetchHQHistoryMinuteTime = func(ctx context.Context, req tdx.HQMinuteRequest, date int, opts tdx.QuoteClientOptions) ([]tdx.HQMinutePoint, error) {
+		historyDates = append(historyDates, date)
+		if req.Market != "sh" || req.Symbol != "600519" {
+			t.Fatalf("req=%#v", req)
+		}
+		if strings.Join(opts.Servers, ",") != "127.0.0.1:7709" {
+			t.Fatalf("servers=%#v", opts.Servers)
+		}
+		return []tdx.HQMinutePoint{{Market: req.Market, Symbol: req.Symbol, Date: "20260605", Time: "09:30", Index: 0, Price: 12.34, Volume: 100}}, nil
+	}
+	fetchHQMinuteTime = func(ctx context.Context, req tdx.HQMinuteRequest, opts tdx.QuoteClientOptions) ([]tdx.HQMinutePoint, error) {
+		return []tdx.HQMinutePoint{{Market: req.Market, Symbol: req.Symbol, Time: "09:30", Index: 0, Price: 12.34, Volume: 100}}, nil
+	}
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "single date",
+			args: []string{"import-tdx-intraday-points", "--market", "sh", "--symbol", "600519", "--date", "2026-06-05", "--server", "127.0.0.1:7709", "--dry-run"},
+			want: "dates_fetched: 1",
+		},
+		{
+			name: "date range",
+			args: []string{"import-tdx-intraday-points", "--market", "sh", "--symbol", "600519", "--since", "2026-06-04", "--until", "2026-06-05", "--server", "127.0.0.1:7709", "--dry-run"},
+			want: "dates_fetched: 2",
+		},
+		{
+			name: "today",
+			args: []string{"import-tdx-intraday-points", "--market", "sh", "--symbol", "600519", "--today", "--server", "127.0.0.1:7709", "--dry-run"},
+			want: "rows_written: 1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			var errOut bytes.Buffer
+			code := Run(context.Background(), tt.args, &out, &errOut)
+			if code != 0 {
+				t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+			}
+			for _, want := range []string{"mode: dry-run", "dataset: a_share_intraday_points", tt.want, "quality_issues: 0"} {
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("missing %q:\n%s", want, out.String())
+				}
+			}
+		})
+	}
+	if len(historyDates) < 3 || historyDates[0] != 20260605 || historyDates[1] != 20260604 || historyDates[2] != 20260605 {
+		t.Fatalf("history dates=%#v", historyDates)
+	}
+}
+
+func TestImportTDXIntradayPointsRejectsMissingDateSelection(t *testing.T) {
+	origHistoryMinute := fetchHQHistoryMinuteTime
+	defer func() { fetchHQHistoryMinuteTime = origHistoryMinute }()
+	fetchHQHistoryMinuteTime = func(ctx context.Context, req tdx.HQMinuteRequest, date int, opts tdx.QuoteClientOptions) ([]tdx.HQMinutePoint, error) {
+		t.Fatal("fetch should not be called")
+		return nil, nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"import-tdx-intraday-points", "--market", "sh", "--symbol", "600519", "--dry-run"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if !strings.Contains(errOut.String(), "one of --date") {
+		t.Fatalf("stderr=%s", errOut.String())
+	}
+}
+
 func TestExQuoteMarketsCommandEmitsJSON(t *testing.T) {
 	original := fetchExMarkets
 	defer func() { fetchExMarkets = original }()
@@ -558,6 +690,62 @@ func TestExQuoteMarketsCommandEmitsJSON(t *testing.T) {
 	}
 	if len(decoded) != 1 || decoded[0].Market != 47 {
 		t.Fatalf("decoded = %#v", decoded)
+	}
+}
+
+func TestRefreshTDXXDXRDryRunCommand(t *testing.T) {
+	origXDXR := fetchHQXDXRInfo
+	defer func() { fetchHQXDXRInfo = origXDXR }()
+
+	fenHong := 1.2
+	fetchHQXDXRInfo = func(ctx context.Context, req tdx.HQMinuteRequest, opts tdx.QuoteClientOptions) ([]tdx.HQXDXRInfo, error) {
+		if req.Market != "sh" || req.Symbol != "600519" {
+			t.Fatalf("req = %#v", req)
+		}
+		if strings.Join(opts.Servers, ",") != "127.0.0.1:7709" {
+			t.Fatalf("servers = %#v", opts.Servers)
+		}
+		return []tdx.HQXDXRInfo{
+			{Market: req.Market, Symbol: req.Symbol, Date: "2026-06-05", Category: 1, Name: "除权除息", FenHong: &fenHong},
+			{Market: req.Market, Symbol: req.Symbol, Date: "2026-06-06", Category: 99, Name: "未知"},
+		}, nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"refresh-tdx-xdxr", "--market", "sh", "--symbol", "600519", "--server", "127.0.0.1:7709", "--dry-run"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	for _, want := range []string{
+		"mode: dry-run",
+		"dataset: a_share_xdxr_events",
+		"asset: sh:600519",
+		"rows_written: 2",
+		"quality_issues: 0",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRefreshTDXXDXRDryRunEmptyResponse(t *testing.T) {
+	origXDXR := fetchHQXDXRInfo
+	defer func() { fetchHQXDXRInfo = origXDXR }()
+
+	fetchHQXDXRInfo = func(ctx context.Context, req tdx.HQMinuteRequest, opts tdx.QuoteClientOptions) ([]tdx.HQXDXRInfo, error) {
+		return nil, nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"refresh-tdx-xdxr", "--market", "sh", "--symbol", "600519", "--dry-run"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if !strings.Contains(out.String(), "rows_written: 0") {
+		t.Fatalf("output=%s", out.String())
 	}
 }
 
@@ -865,4 +1053,45 @@ func lcMinuteRecord(minute uint16) []byte {
 
 func putFloat32(dst []byte, value float32) {
 	binary.LittleEndian.PutUint32(dst, math.Float32bits(value))
+}
+
+func cliGBBQRecord(market int, symbol string, date uint32, category byte) []byte {
+	out := make([]byte, 29)
+	out[0] = byte(market)
+	copy(out[1:8], []byte(symbol))
+	binary.LittleEndian.PutUint32(out[8:12], date)
+	out[12] = category
+	putFloat32(out[13:17], 1)
+	putFloat32(out[17:21], 2)
+	putFloat32(out[21:25], 3)
+	putFloat32(out[25:29], 4)
+	return out
+}
+
+func cliBlockFile() []byte {
+	raw := make([]byte, 386)
+	binary.LittleEndian.PutUint16(raw[384:386], 1)
+	raw = append(raw, fixedCLIBytes([]byte("TEST"), 9)...)
+	header := make([]byte, 4)
+	binary.LittleEndian.PutUint16(header[:2], 1)
+	raw = append(raw, header...)
+	members := make([]byte, 2800)
+	copy(members[:7], []byte("1600519"))
+	return append(raw, members...)
+}
+
+func cliExDailyRecord() []byte {
+	raw := make([]byte, 32)
+	binary.LittleEndian.PutUint32(raw[0:4], 20260605)
+	putFloat32(raw[4:8], 1)
+	putFloat32(raw[8:12], 2)
+	putFloat32(raw[12:16], 1)
+	putFloat32(raw[16:20], 1.5)
+	return raw
+}
+
+func fixedCLIBytes(value []byte, size int) []byte {
+	out := make([]byte, size)
+	copy(out, value)
+	return out
 }

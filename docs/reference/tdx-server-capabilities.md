@@ -155,14 +155,26 @@ TDX K 线请求的分页语义需要和日期区间区分：
 - 当前 server 在当前网络和当前时间能返回该请求。
 - 返回内容是否完整、实时、延迟或受权限限制。
 
-## 与本地 TDX 文件的关系
+## 与本地和离线数据的关系
 
-TDX server 在线请求和本地 TDX 文件是两类来源：
+TDX 数据源分三类，工程边界不同：
 
-- 在线 `hq` / `exhq` 返回 live 或 server 保留的请求结果。
-- 本地 `.day`、`.lc1`、`.lc5`、`.1`、`.5` 文件来自客户端数据目录或官方离线包。
+| Source class | Meaning | Examples |
+| --- | --- | --- |
+| `client-local` | 已安装 TDX 客户端在本机维护的目录和文件 | `vipdoc/`, `T0002/blocknew/`, 本机 `gbbq`, 本机扩展行情目录如 `Lxxx` |
+| `offline-package` | 从 TDX 官方页面下载的 ZIP 或 `.dat` 包 | `hsjday.zip`, `shlday.zip`, `tdxfin.zip`, `tdxgp.zip` |
+| `online-provider` | 连接 TDX `hq` / `exhq` server 的请求/响应读取 | `hq-xdxr`, `hq-block`, `exquote-bars`, `/api/tdx/*` |
+
+关键边界：
+
+- 在线 `hq` / `exhq` 返回 live 或 server 保留的请求结果，默认不落库。
+- `client-local` 文件来自某台机器的 TDX 客户端状态，完整性取决于客户端版本、下载记录和用户配置。
+- `offline-package` 更适合全量 bootstrap/backfill，但仍需校验包清单、文件大小、日期和格式版本。
 - 分时点不是 1 分钟 OHLCV；不能把 server 分时直接当作本地 `.lc1` 一分钟 K。
-- 专业财务 ZIP/`.dat` 文件也不是 `hq` 的财务摘要字段。
+- 需要落库 server 分时点时，使用显式 `import-tdx-intraday-points` 写入 `a_share_intraday_points`；普通 `/api/tdx/*` live provider 读取不隐式写 ClickHouse。
+- 专业财务 ZIP/`.dat` 文件不是 `hq` 的财务摘要字段。
+- 在线 `hq-xdxr` 可交叉验证本机 `gbbq`，但不能替代 `client-local` `gbbq` reader。
+- 在线 `hq-block` 可读取 server block 内容，但不能替代 `T0002/blocknew` 自定义板块 reader/write。
 
 ## 参考实现
 

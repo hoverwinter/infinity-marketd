@@ -27,6 +27,114 @@ type MinuteBar struct {
 	Amount    float64
 }
 
+type Symbol struct {
+	Market string
+	Symbol string
+}
+
+type IntradayPoint struct {
+	Market     string
+	Symbol     string
+	TradeDate  time.Time
+	PointTime  time.Time
+	PointIndex uint16
+	Price      float64
+	Volume     uint64
+}
+
+type XDXREvent struct {
+	Market         string
+	Symbol         string
+	EventDate      time.Time
+	Category       uint8
+	CategoryName   string
+	FenHong        *float64
+	PeiGuJia       *float64
+	SongZhuanGu    *float64
+	PeiGu          *float64
+	SuoGu          *float64
+	PanQianLiuTong *float64
+	PanHouLiuTong  *float64
+	QianZongGuBen  *float64
+	HouZongGuBen   *float64
+	FenShu         *float64
+	XingQuanJia    *float64
+}
+
+type AdjustFactor struct {
+	Market     string
+	Symbol     string
+	TradeDate  time.Time
+	QFQFactor  *float64
+	HFQFactor  *float64
+	ComputedAt time.Time
+}
+
+type CapitalChangeEvent struct {
+	Market           string
+	Symbol           string
+	EventDate        time.Time
+	Category         uint8
+	EventSeq         uint16
+	EventName        string
+	CashDividend     *float64
+	AllotmentPrice   *float64
+	BonusShares      *float64
+	AllotmentShares  *float64
+	ShrinkShares     *float64
+	PreFloatShares   *float64
+	PostFloatShares  *float64
+	PreTotalShares   *float64
+	PostTotalShares  *float64
+	RatioDenominator *float64
+	ExercisePrice    *float64
+}
+
+type TDXBlockSnapshot struct {
+	SnapshotID   string
+	BlockScope   string
+	SnapshotTime time.Time
+	ContentHash  string
+	BlockCount   uint32
+	MemberCount  uint32
+}
+
+type TDXBlockDefinition struct {
+	SnapshotID   string
+	BlockScope   string
+	BlockKind    string
+	BlockID      string
+	BlockName    string
+	BlockType    uint16
+	DisplayOrder uint32
+	MemberCount  uint32
+}
+
+type TDXBlockMembership struct {
+	SnapshotID  string
+	BlockScope  string
+	BlockID     string
+	MemberOrder uint32
+	Code        string
+	Market      string
+	Symbol      string
+}
+
+type ExDailyBar struct {
+	ExMarket        uint16
+	Code            string
+	TradeDate       time.Time
+	Open            float64
+	High            float64
+	Low             float64
+	Close           float64
+	Position        int64
+	Trade           int64
+	Price           *float64
+	Amount          *float64
+	SettlementPrice *float64
+}
+
 type QualityIssue struct {
 	RunID             string
 	Dataset           string

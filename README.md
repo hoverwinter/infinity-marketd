@@ -45,10 +45,23 @@ go run ./cmd/infinity querier serve --config examples/config.example.yaml --list
 
 go run ./cmd/infinity querier health --url http://127.0.0.1:8808
 go run ./cmd/infinity querier bars --url http://127.0.0.1:8808 --market sh --symbol 600519 --period 1d --since 2024-01-01 --until 2024-12-31
+go run ./cmd/infinity querier bars --url http://127.0.0.1:8808 --market sh --symbol 600519 --period 1d --adjust qfq --since 2024-01-01 --until 2024-12-31
 go run ./cmd/infinity querier bars --url http://127.0.0.1:8808 --market sh --symbol 600519 --period 1m --since "2026-01-01 09:30:00" --until "2026-01-01 15:00:00"
 ```
 
-`infinity querier bars` calls the querier HTTP service under `/api/v1`. The CLI does not duplicate ClickHouse SQL logic. `--since` and `--until` are inclusive; for minute bars, a date-only `--until 2026-01-01` includes the whole trading date.
+`infinity querier bars` calls the querier HTTP service under `/api/v1`. The CLI does not duplicate ClickHouse SQL logic. `--since` and `--until` are inclusive; for minute bars, a date-only `--until 2026-01-01` includes the whole trading date. `--adjust qfq|hfq` uses precomputed daily adjustment factors and adjusts OHLC only.
+
+Console commands:
+
+```bash
+make console-install
+make console-dev
+make console-build
+go run ./cmd/infinity-console --config examples/config.example.yaml \
+  --listen 127.0.0.1:8809 --console-dist web/console/dist
+```
+
+See `docs/console.md` for the Node.js + Vite workflow, production serving, and safety boundary.
 
 Explicit file imports are also supported:
 
@@ -65,6 +78,8 @@ Market fact tables:
 - `infinity_market.a_share_bars_1d`
 - `infinity_market.a_share_bars_1m`
 - `infinity_market.a_share_bars_5m`
+- `infinity_market.a_share_xdxr_events`
+- `infinity_market.a_share_adjust_factors_1d`
 
 Operational tables:
 

@@ -280,6 +280,44 @@ ENGINE = ReplacingMergeTree
 ORDER BY (metric_type);
 ```
 
+### infinity_market.a_share_intraday_points
+
+Canonical persisted A-share TDX standard HQ minute-time points.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_intraday_points
+(
+    market LowCardinality(String),
+    symbol String,
+    trade_date Date,
+    point_time DateTime('Asia/Shanghai'),
+    point_index UInt16,
+    price Float64,
+    volume UInt64
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYYYYMM(trade_date)
+ORDER BY (market, symbol, trade_date, point_time);
+```
+
+Logical key:
+
+```text
+market + symbol + trade_date + point_time
+```
+
+This table stores TDX minute-time `price + volume` points. It is not a 1-minute OHLCV table and does not store `open`, `high`, `low`, `close`, or `amount`.
+
+Import commands:
+
+```text
+marketd import-tdx-intraday-points --market sh --symbol 600519 --date 2026-06-05
+marketd import-tdx-intraday-points --market sh --symbol 600519 --since 2026-06-01 --until 2026-06-05
+marketd import-tdx-intraday-points --market sh --symbol 600519 --today
+```
+
+Local `import-tdx-1m` does not populate this table. Live `/api/tdx/*` provider reads also remain read-only.
+
 ### infinity_market.a_share_bars_1m_scan
 
 Short-retention 1-minute scan data rebuilt from canonical 1-minute facts.
@@ -353,6 +391,201 @@ ORDER BY (trade_date, market, symbol);
 ```
 
 Use `NULL` when previous close is missing or non-positive.
+
+### infinity_market.a_share_xdxr_events
+
+Normalized TDX xdxr corporate-action events. These rows are refreshed explicitly from TDX HQ and are not OHLCV facts.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_xdxr_events
+(
+    market LowCardinality(String),
+    symbol String,
+    event_date Date,
+    category UInt8,
+    category_name String,
+    fenhong Nullable(Float64),
+    peigujia Nullable(Float64),
+    songzhuangu Nullable(Float64),
+    peigu Nullable(Float64),
+    suogu Nullable(Float64),
+    panqianliutong Nullable(Float64),
+    panhouliutong Nullable(Float64),
+    qianzongguben Nullable(Float64),
+    houzongguben Nullable(Float64),
+    fenshu Nullable(Float64),
+    xingquanjia Nullable(Float64)
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(event_date)
+ORDER BY (market, symbol, event_date, category);
+```
+
+Logical key:
+
+```text
+market + symbol + event_date + category
+```
+
+### infinity_market.a_share_adjust_factors_1d
+
+Daily qfq/hfq adjustment factors rebuilt from canonical daily bars and `a_share_xdxr_events`.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_adjust_factors_1d
+(
+    market LowCardinality(String),
+    symbol String,
+    trade_date Date,
+    qfq_factor Nullable(Float64),
+    hfq_factor Nullable(Float64),
+    computed_at DateTime64(3) DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(computed_at)
+PARTITION BY toYear(trade_date)
+ORDER BY (market, symbol, trade_date);
+```
+
+Adjusted `/api/v1/bars` queries join this table and multiply OHLC by the selected factor. Volume and amount remain raw values. Full adjusted K-line tables are intentionally not created.
+
+### infinity_market.a_share_capital_change_events
+
+Client-local TDX `gbbq` capital-change and corporate-action events.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_capital_change_events
+(
+    market LowCardinality(String),
+    symbol String,
+    event_date Date,
+    category UInt8,
+    event_seq UInt16,
+    event_name LowCardinality(String),
+    cash_dividend Nullable(Float64),
+    allotment_price Nullable(Float64),
+    bonus_shares Nullable(Float64),
+    allotment_shares Nullable(Float64),
+    shrink_shares Nullable(Float64),
+    pre_float_shares Nullable(Float64),
+    post_float_shares Nullable(Float64),
+    pre_total_shares Nullable(Float64),
+    post_total_shares Nullable(Float64),
+    ratio_denominator Nullable(Float64),
+    exercise_price Nullable(Float64)
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(event_date)
+ORDER BY (market, symbol, event_date, category, event_seq);
+```
+
+Logical key:
+
+```text
+market + symbol + event_date + category + event_seq
+```
+
+This table is event input for later adjustment-factor, turnover, and market-cap derived jobs. It is not a bar table and does not store file source columns.
+
+### infinity_market.tdx_block_snapshots
+
+Client-local TDX block snapshot metadata. One snapshot represents normalized block content from one import.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.tdx_block_snapshots
+(
+    snapshot_id String,
+    block_scope LowCardinality(String),
+    snapshot_time DateTime64(3, 'Asia/Shanghai'),
+    content_hash String,
+    block_count UInt32,
+    member_count UInt32
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYYYYMM(snapshot_time)
+ORDER BY (block_scope, snapshot_time, snapshot_id);
+```
+
+Use the latest snapshot per `block_scope` for current membership queries:
+
+```sql
+SELECT snapshot_id
+FROM infinity_market.tdx_block_snapshots
+WHERE block_scope = 'custom'
+ORDER BY snapshot_time DESC
+LIMIT 1;
+```
+
+### infinity_market.tdx_block_definitions
+
+Block definitions for a specific snapshot.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.tdx_block_definitions
+(
+    snapshot_id String,
+    block_scope LowCardinality(String),
+    block_kind LowCardinality(String),
+    block_id String,
+    block_name String,
+    block_type UInt16,
+    display_order UInt32,
+    member_count UInt32
+)
+ENGINE = ReplacingMergeTree
+ORDER BY (snapshot_id, block_scope, block_id);
+```
+
+### infinity_market.tdx_block_memberships
+
+Block memberships for a specific snapshot.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.tdx_block_memberships
+(
+    snapshot_id String,
+    block_scope LowCardinality(String),
+    block_id String,
+    member_order UInt32,
+    code String,
+    market LowCardinality(String),
+    symbol String
+)
+ENGINE = ReplacingMergeTree
+ORDER BY (snapshot_id, block_scope, block_id, market, symbol, member_order);
+```
+
+Snapshot storage avoids destructive replacement when a later client-local import removes a member. Consumers choose the snapshot they want.
+
+### infinity_market.tdx_ex_bars_1d
+
+Client-local TDX extension-market daily bars. These use numeric `ex_market` and instrument `code`, not A-share `sh` / `sz` / `bj` symbols.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.tdx_ex_bars_1d
+(
+    ex_market UInt16,
+    code String,
+    trade_date Date,
+    open Float64,
+    high Float64,
+    low Float64,
+    close Float64,
+    position Int64,
+    trade Int64,
+    price Nullable(Float64),
+    amount Nullable(Float64),
+    settlement_price Nullable(Float64)
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(trade_date)
+ORDER BY (ex_market, code, trade_date);
+```
+
+Logical key:
+
+```text
+ex_market + code + trade_date
+```
 
 ### infinity_ops.watermarks
 
@@ -499,6 +732,7 @@ Offline imports are raw data ingestion only:
 ```text
 import-tdx-1m -> writes a_share_bars_1m only
 import-tdx-5m -> writes a_share_bars_5m only
+import-tdx-intraday-points -> writes a_share_intraday_points only
 import-tdx-fin -> syncs tdx_financial_item_dictionary, writes a_share_financial_raw_items only
 import-tdx-gp -> syncs tdx_gp_metric_dictionary, writes a_share_gp_metric_values only
 ```
@@ -512,7 +746,18 @@ marketd refresh-minute-scan --period 5m --since 2026-06-01 --until 2026-06-07
 
 This keeps large offline backfills deterministic and prevents hidden write amplification. Operators decide when to pay the scan refresh cost.
 
+Adjusted bars follow the same explicit refresh rule:
+
+```text
+marketd refresh-tdx-xdxr --market sh --symbol 600519
+marketd refresh-adjust-factors --market sh --symbol 600519
+```
+
+`import-tdx-day`, `import-tdx-1m`, and `import-tdx-5m` do not fetch xdxr events and do not refresh qfq/hfq factors as hidden side effects.
+
 Financial wide tables follow the same explicit refresh rule. `import-tdx-fin` and `import-tdx-gp` do not generate wide financial snapshots, factors, or scan tables as hidden side effects.
+
+Existing deployments can add the two new tables non-destructively by running bootstrap. Then backfill in order: raw daily bars, xdxr events, adjustment factors. Rollback is non-destructive: stop using `adjust=qfq|hfq`; canonical OHLCV tables are unchanged.
 
 ## Current Open Questions
 

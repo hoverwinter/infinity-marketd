@@ -119,20 +119,145 @@ ORDER BY (item_id)`, marketDB),
 )
 ENGINE = ReplacingMergeTree
 ORDER BY (metric_type)`, marketDB),
-		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_daily_derived
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_intraday_points
 (
     market LowCardinality(String),
     symbol String,
     trade_date Date,
+    point_time DateTime('Asia/Shanghai'),
+    point_index UInt16,
+    price Float64,
+    volume UInt64
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYYYYMM(trade_date)
+ORDER BY (market, symbol, trade_date, point_time)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_daily_derived
+		(
+		    market LowCardinality(String),
+	    symbol String,
+	    trade_date Date,
     prev_close Nullable(Float64),
     pct_chg Nullable(Float64),
     computed_at DateTime64(3) DEFAULT now64(3)
 )
-ENGINE = ReplacingMergeTree(computed_at)
-PARTITION BY toYear(trade_date)
-ORDER BY (trade_date, market, symbol)`, marketDB),
-		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.watermarks
+	ENGINE = ReplacingMergeTree(computed_at)
+	PARTITION BY toYear(trade_date)
+	ORDER BY (trade_date, market, symbol)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_xdxr_events
+	(
+	    market LowCardinality(String),
+	    symbol String,
+	    event_date Date,
+	    category UInt8,
+	    category_name String,
+	    fenhong Nullable(Float64),
+	    peigujia Nullable(Float64),
+	    songzhuangu Nullable(Float64),
+	    peigu Nullable(Float64),
+	    suogu Nullable(Float64),
+	    panqianliutong Nullable(Float64),
+	    panhouliutong Nullable(Float64),
+	    qianzongguben Nullable(Float64),
+	    houzongguben Nullable(Float64),
+	    fenshu Nullable(Float64),
+	    xingquanjia Nullable(Float64)
+	)
+	ENGINE = ReplacingMergeTree
+	PARTITION BY toYear(event_date)
+	ORDER BY (market, symbol, event_date, category)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_adjust_factors_1d
+	(
+	    market LowCardinality(String),
+	    symbol String,
+	    trade_date Date,
+	    qfq_factor Nullable(Float64),
+	    hfq_factor Nullable(Float64),
+	    computed_at DateTime64(3) DEFAULT now64(3)
+	)
+	ENGINE = ReplacingMergeTree(computed_at)
+	PARTITION BY toYear(trade_date)
+	ORDER BY (market, symbol, trade_date)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_capital_change_events
 (
+    market LowCardinality(String),
+    symbol String,
+    event_date Date,
+    category UInt8,
+    event_seq UInt16,
+    event_name LowCardinality(String),
+    cash_dividend Nullable(Float64),
+    allotment_price Nullable(Float64),
+    bonus_shares Nullable(Float64),
+    allotment_shares Nullable(Float64),
+    shrink_shares Nullable(Float64),
+    pre_float_shares Nullable(Float64),
+    post_float_shares Nullable(Float64),
+    pre_total_shares Nullable(Float64),
+    post_total_shares Nullable(Float64),
+    ratio_denominator Nullable(Float64),
+    exercise_price Nullable(Float64)
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(event_date)
+ORDER BY (market, symbol, event_date, category, event_seq)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.tdx_block_snapshots
+(
+    snapshot_id String,
+    block_scope LowCardinality(String),
+    snapshot_time DateTime64(3, 'Asia/Shanghai'),
+    content_hash String,
+    block_count UInt32,
+    member_count UInt32
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYYYYMM(snapshot_time)
+ORDER BY (block_scope, snapshot_time, snapshot_id)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.tdx_block_definitions
+(
+    snapshot_id String,
+    block_scope LowCardinality(String),
+    block_kind LowCardinality(String),
+    block_id String,
+    block_name String,
+    block_type UInt16,
+    display_order UInt32,
+    member_count UInt32
+)
+ENGINE = ReplacingMergeTree
+ORDER BY (snapshot_id, block_scope, block_id)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.tdx_block_memberships
+(
+    snapshot_id String,
+    block_scope LowCardinality(String),
+    block_id String,
+    member_order UInt32,
+    code String,
+    market LowCardinality(String),
+    symbol String
+)
+ENGINE = ReplacingMergeTree
+ORDER BY (snapshot_id, block_scope, block_id, market, symbol, member_order)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.tdx_ex_bars_1d
+(
+    ex_market UInt16,
+    code String,
+    trade_date Date,
+    open Float64,
+    high Float64,
+    low Float64,
+    close Float64,
+    position Int64,
+    trade Int64,
+    price Nullable(Float64),
+    amount Nullable(Float64),
+    settlement_price Nullable(Float64)
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(trade_date)
+ORDER BY (ex_market, code, trade_date)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.watermarks
+	(
     dataset LowCardinality(String),
     asset LowCardinality(String),
     status LowCardinality(String),

@@ -44,6 +44,8 @@ type TDXProvider struct {
 	FetchExTransactions          func(context.Context, tdx.ExQuoteRequest, int, int, tdx.ExQuoteClientOptions) ([]tdx.ExTransaction, error)
 	FetchExHistoryTransactions   func(context.Context, tdx.ExQuoteRequest, int, int, int, tdx.ExQuoteClientOptions) ([]tdx.ExTransaction, error)
 	FetchExHistoryBarsRange      func(context.Context, tdx.ExQuoteRequest, int, int, tdx.ExQuoteClientOptions) ([]tdx.ExBar, error)
+	LoadHQBestIPCache            func(string) (tdx.HQBestIPCache, error)
+	RefreshHQBestIPCache         func(context.Context, []string, tdx.QuoteClientOptions) (tdx.HQBestIPCache, error)
 }
 
 func DefaultTDXProvider() *TDXProvider {
@@ -74,6 +76,8 @@ func DefaultTDXProvider() *TDXProvider {
 		FetchExTransactions:          tdx.FetchExTransactions,
 		FetchExHistoryTransactions:   tdx.FetchExHistoryTransactions,
 		FetchExHistoryBarsRange:      tdx.FetchExHistoryBarsRange,
+		LoadHQBestIPCache:            tdx.LoadHQBestIPCache,
+		RefreshHQBestIPCache:         tdx.RefreshHQBestIPCache,
 	}
 }
 
