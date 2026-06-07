@@ -322,3 +322,29 @@ GET /api/tdx/exhq/history-bars?market=47&code=IF1709&start_date=20260601&end_dat
 - `/api/tdx/*` 调用方不应依赖 ClickHouse 表名。
 - `/api/tdx/hq/*` 和 `/api/tdx/exhq/*` 的参数模型故意不同，因为底层协议不同。
 - `/api/tdx/*` 返回的字段尽量贴近 TDX 解码结果；产品级字段归一化应在 `/api/v1` 或上层 adapter 中完成。
+
+## 高级在线读 API（advanced，移植自 millken/tdx）
+
+均为 live 上游读，不落库。`/api/tdx/hq/*` 复用现有 HQ server 选择；`/api/tdx/sp/*` 与 `/api/tdx/fund/*` 因协议握手不同，**必须显式传 `server`**（无公共默认）。详见 `docs/reference/tdx-advanced-protocol-notes.md`。
+
+| 端点 | 说明 | 主要参数 |
+| --- | --- | --- |
+| `GET /api/tdx/hq/quotes-list` | 排序行情列表（扫盘） | `category`、`sort`(名/原始)、`start`、`count`、`reverse`、`exclude`(new,kcb,st,cyb,bj/原始)、`server` |
+| `GET /api/tdx/hq/top-board` | 9 组排行榜 | `category`、`size`(1-100)、`server` |
+| `GET /api/tdx/hq/lhb` | 龙虎榜（F10 资金动向解析） | `market`、`symbol`、`alias?`、`server` |
+| `GET /api/tdx/sp/board-members` | SP 实时板块成分 | `server`(必填)、`board`、`sort_type`、`count`、`order`、`timeout?` |
+| `GET /api/tdx/fund/kline` | 基金 K 线（7727） | `server`(必填)、`code`、`period`、`count`、`timeout?` |
+| `GET /api/tdx/fund/detail` | 基金明细（7727 原始） | `server`(必填)、`code`、`mode?`、`timeout?` |
+
+错误映射沿用既有约定：解码失败 → `502`，连接/超时/全 server 失败 → `503`，参数非法 → `400`。
+
+示例：
+
+```bash
+curl 'http://127.0.0.1:8808/api/tdx/hq/quotes-list?category=0&sort=turnover&count=20'
+curl 'http://127.0.0.1:8808/api/tdx/hq/top-board?category=0&size=10'
+curl 'http://127.0.0.1:8808/api/tdx/hq/lhb?market=sh&symbol=600519'
+curl 'http://127.0.0.1:8808/api/tdx/sp/board-members?server=<sp>:7709&board=880472&count=50'
+curl 'http://127.0.0.1:8808/api/tdx/fund/kline?server=<fund>:7727&code=159915&period=day&count=100'
+curl 'http://127.0.0.1:8808/api/tdx/fund/detail?server=<fund>:7727&code=159915'
+```

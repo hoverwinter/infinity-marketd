@@ -194,3 +194,18 @@ TDX public server 行为不稳定，因此实现需要保持保守：
 - `docs/api/tdx.md`：HTTP provider API contract。
 
 新增市场或新增 TDX 能力前，应先取得 live 或 fixture 样本，再补 parser、测试和文档状态说明。
+
+## 高级在线读能力（add-tdx-advanced-online-apis）
+
+实现状态：均为 live 上游读，**不落 ClickHouse**（fact/derived/ops 均不写）。协议移植自 millken/tdx，正确性由 round-trip / net.Pipe fixture 测试保证，无 live server 验证。
+
+| 能力 | CLI | Provider 端点 | 会话 |
+| --- | --- | --- | --- |
+| 排序行情列表 | `marketd hq-quotes-list` | `/api/tdx/hq/quotes-list` | 既有 QuoteSession（0x054B） |
+| 排行榜 | `marketd hq-top-board` | `/api/tdx/hq/top-board` | 既有 QuoteSession（0x053F） |
+| 龙虎榜 | `marketd hq-lhb` | `/api/tdx/hq/lhb` | 既有 QuoteSession（F10 文本解析） |
+| SP 板块成分 | `marketd sp-board-members` | `/api/tdx/sp/board-members` | 新 SP 会话（0x122C，需显式 server） |
+| 基金 K 线 | `marketd fund-kline` | `/api/tdx/fund/kline` | 新 fund 会话（0x2489，需显式 server） |
+| 基金明细 | `marketd fund-detail` | `/api/tdx/fund/detail` | 新 fund 会话（0x2488，需显式 server） |
+
+边界：标准 0x0c 命令复用既有 `QuoteSession`；SP / fund 使用 `internal/tdx/sp_client.go`、`fund_client.go` 的独立握手（SP login 0x2454 + 可选 fund bootstrap 0x23F0），其响应是 0x01 SP 帧。SP/fund 无公共默认 server。

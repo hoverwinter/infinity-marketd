@@ -135,6 +135,18 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runQuoteServe(ctx, args[1:], stdout, stderr)
 	case "quote-status":
 		return runQuoteStatus(ctx, args[1:], stdout, stderr)
+	case "hq-quotes-list":
+		return runHQQuotesList(ctx, args[1:], stdout, stderr)
+	case "hq-top-board":
+		return runHQTopBoard(ctx, args[1:], stdout, stderr)
+	case "hq-lhb":
+		return runHQLHB(ctx, args[1:], stdout, stderr)
+	case "sp-board-members":
+		return runSPBoardMembers(ctx, args[1:], stdout, stderr)
+	case "fund-kline":
+		return runFundKline(ctx, args[1:], stdout, stderr)
+	case "fund-detail":
+		return runFundDetail(ctx, args[1:], stdout, stderr)
 	case "exquote-markets":
 		return runExQuoteMarkets(ctx, args[1:], stdout, stderr)
 	case "exquote-count":
@@ -3231,6 +3243,12 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  hq-block")
 	fmt.Fprintln(out, "  quote-serve")
 	fmt.Fprintln(out, "  quote-status")
+	fmt.Fprintln(out, "  hq-quotes-list")
+	fmt.Fprintln(out, "  hq-top-board")
+	fmt.Fprintln(out, "  hq-lhb")
+	fmt.Fprintln(out, "  sp-board-members")
+	fmt.Fprintln(out, "  fund-kline")
+	fmt.Fprintln(out, "  fund-detail")
 	fmt.Fprintln(out, "  exquote-markets")
 	fmt.Fprintln(out, "  exquote-count")
 	fmt.Fprintln(out, "  exquote-instruments")

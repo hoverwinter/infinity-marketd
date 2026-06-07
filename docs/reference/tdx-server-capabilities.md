@@ -188,3 +188,12 @@ TDX 数据源分三类，工程边界不同：
 - `millken/tdx`：较新的 Go TDX client，可参考 sorted quote list、top board、board members、fund detail 和 LHB 解析。
 
 更多 TDX 生态库能力对照见 [TDX Library Capability Reference](tdx-python-libraries.md)。
+
+## Advanced online reads (implemented)
+
+Quote list (0x054B), top board (0x053F), F10-derived LHB, SP board members
+(0x122C), and fund 7727 (kline 0x2489 / detail 0x2488) are implemented as live
+provider reads. Standard 0x0c commands run on the existing HQ session; SP and
+fund use a separate handshake (SP login + optional fund bootstrap) and return
+0x01 SP frames. SP/fund have no known-good public server defaults — pass an
+explicit server. Protocol details: `tdx-advanced-protocol-notes.md`.

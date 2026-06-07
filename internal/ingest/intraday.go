@@ -80,10 +80,7 @@ func ImportIntradayPoints(ctx context.Context, opts IntradayImportOptions) (Intr
 		return IntradaySummary{}, fmt.Errorf("store is required when dry-run is false")
 	}
 
-	runID := newRunID()
-	started := time.Now()
 	summary := IntradaySummary{
-		RunID:       runID,
 		Dataset:     intradayDataset,
 		TargetTable: intradayDataset,
 		Market:      req.Market,
@@ -94,89 +91,87 @@ func ImportIntradayPoints(ctx context.Context, opts IntradayImportOptions) (Intr
 		Today:       opts.Today,
 		DryRun:      opts.DryRun,
 	}
-	var allPoints []model.IntradayPoint
-	var issues []model.QualityIssue
-	var rowsSkipped uint64
 
-	switch mode {
-	case "today":
-		tradeDate := dateOnly(opts.Now().In(loc), loc)
-		points, err := opts.FetchMinuteTime(ctx, req, opts.ClientOptions)
-		if err != nil {
-			recordIntradayFailure(ctx, opts.Store, summary, started, err)
-			return summary, err
-		}
-		normalized, skipped, pointIssues := normalizeIntradayPoints(runID, req, tradeDate, points, loc)
-		allPoints = append(allPoints, normalized...)
-		rowsSkipped += skipped
-		issues = append(issues, pointIssues...)
-		summary.DatesFetched = 1
-		if len(points) == 0 {
-			summary.EmptyDates = 1
-		}
-	case "history":
-		for _, tradeDate := range dates {
-			dateInt := intDate(tradeDate)
-			points, err := opts.FetchHistoryMinute(ctx, req, dateInt, opts.ClientOptions)
+	// Product-owned counters tracked while producing rows.
+	var datesFetched, emptyDates uint64
+	produce := func(ctx context.Context, runID string) ([]model.IntradayPoint, uint64, []model.QualityIssue, error) {
+		var allPoints []model.IntradayPoint
+		var issues []model.QualityIssue
+		var rowsSkipped uint64
+		switch mode {
+		case "today":
+			tradeDate := dateOnly(opts.Now().In(loc), loc)
+			points, err := opts.FetchMinuteTime(ctx, req, opts.ClientOptions)
 			if err != nil {
-				recordIntradayFailure(ctx, opts.Store, summary, started, err)
-				return summary, err
-			}
-			summary.DatesFetched++
-			if len(points) == 0 {
-				summary.EmptyDates++
-				continue
+				return nil, 0, nil, err
 			}
 			normalized, skipped, pointIssues := normalizeIntradayPoints(runID, req, tradeDate, points, loc)
 			allPoints = append(allPoints, normalized...)
 			rowsSkipped += skipped
 			issues = append(issues, pointIssues...)
+			datesFetched = 1
+			if len(points) == 0 {
+				emptyDates = 1
+			}
+		case "history":
+			for _, tradeDate := range dates {
+				points, err := opts.FetchHistoryMinute(ctx, req, intDate(tradeDate), opts.ClientOptions)
+				if err != nil {
+					return nil, 0, nil, err
+				}
+				datesFetched++
+				if len(points) == 0 {
+					emptyDates++
+					continue
+				}
+				normalized, skipped, pointIssues := normalizeIntradayPoints(runID, req, tradeDate, points, loc)
+				allPoints = append(allPoints, normalized...)
+				rowsSkipped += skipped
+				issues = append(issues, pointIssues...)
+			}
+		default:
+			return nil, 0, nil, fmt.Errorf("unsupported intraday import mode %q", mode)
 		}
-	default:
-		return IntradaySummary{}, fmt.Errorf("unsupported intraday import mode %q", mode)
+		return allPoints, rowsSkipped, issues, nil
 	}
 
-	summary.RowsWritten = uint64(len(allPoints))
-	summary.RowsSkipped = rowsSkipped
-	summary.Issues = issues
-	if opts.DryRun {
-		return summary, nil
+	params, _ := json.Marshal(map[string]any{
+		"market": req.Market,
+		"symbol": req.Symbol,
+		"date":   opts.Date,
+		"since":  opts.Since,
+		"until":  opts.Until,
+		"today":  opts.Today,
+	})
+
+	var ops OnlineOps
+	if opts.Store != nil {
+		ops = opts.Store
 	}
-	if err := opts.Store.InsertIntradayPoints(ctx, allPoints); err != nil {
-		recordIntradayFailure(ctx, opts.Store, summary, started, err)
-		return summary, err
-	}
-	if err := opts.Store.InsertQualityIssues(ctx, summary.Issues); err != nil {
-		recordIntradayFailure(ctx, opts.Store, summary, started, err)
-		return summary, err
-	}
-	minWM, maxWM := intradayWatermarks(allPoints)
-	now := time.Now()
-	status := "success"
-	message := "ok"
-	if len(summary.Issues) > 0 {
-		status = "degraded"
-		message = fmt.Sprintf("%d quality issue(s)", len(summary.Issues))
-	}
-	if summary.RowsWritten == 0 {
-		message = "no rows returned"
-	}
-	if minWM != nil || maxWM != nil {
-		if err := opts.Store.InsertWatermark(ctx, model.Watermark{
-			Dataset:      summary.Dataset,
-			Asset:        fmt.Sprintf("%s:%s", req.Market, req.Symbol),
-			Status:       status,
-			MinWatermark: minWM,
-			MaxWatermark: maxWM,
-			RowsWritten:  summary.RowsWritten,
-			Message:      message,
-			UpdatedAt:    now,
-		}); err != nil {
-			recordIntradayFailure(ctx, opts.Store, summary, started, err)
-			return summary, err
-		}
-	}
-	if err := recordIntradayRun(ctx, opts.Store, summary, started, nil, status); err != nil {
+
+	result, err := RunOnlineJob(ctx, OnlineJob[model.IntradayPoint]{
+		Dataset:     intradayDataset,
+		TargetTable: intradayDataset,
+		TaskType:    "tdx_intraday_import",
+		InputFormat: "tdx.hq.minute_time",
+		Asset:       fmt.Sprintf("%s:%s", req.Market, req.Symbol),
+		Params:      string(params),
+		DryRun:      opts.DryRun,
+		Ops:         ops,
+		Now:         opts.Now,
+		Produce:     produce,
+		Write: func(ctx context.Context, rows []model.IntradayPoint) error {
+			return opts.Store.InsertIntradayPoints(ctx, rows)
+		},
+		Bounds: intradayWatermarks,
+	})
+	summary.RunID = result.RunID
+	summary.RowsWritten = result.RowsWritten
+	summary.RowsSkipped = result.RowsSkipped
+	summary.Issues = result.Issues
+	summary.DatesFetched = datesFetched
+	summary.EmptyDates = emptyDates
+	if err != nil {
 		return summary, err
 	}
 	return summary, nil
@@ -322,47 +317,6 @@ func intradayWatermarks(points []model.IntradayPoint) (*time.Time, *time.Time) {
 		}
 	}
 	return &min, &max
-}
-
-func recordIntradayFailure(ctx context.Context, store *chstore.Store, summary IntradaySummary, started time.Time, failure error) {
-	_ = recordIntradayRun(ctx, store, summary, started, failure, "failed")
-}
-
-func recordIntradayRun(ctx context.Context, store *chstore.Store, summary IntradaySummary, started time.Time, failure error, status string) error {
-	if store == nil {
-		return nil
-	}
-	finished := time.Now()
-	duration := uint64(finished.Sub(started).Milliseconds())
-	errText := ""
-	if failure != nil {
-		errText = failure.Error()
-	}
-	params, _ := json.Marshal(map[string]any{
-		"market": summary.Market,
-		"symbol": summary.Symbol,
-		"date":   summary.Date,
-		"since":  summary.Since,
-		"until":  summary.Until,
-		"today":  summary.Today,
-	})
-	return store.InsertTaskRun(ctx, model.TaskRun{
-		RunID:       summary.RunID,
-		Dataset:     summary.Dataset,
-		TaskType:    "tdx_intraday_import",
-		Status:      status,
-		TargetTable: summary.TargetTable,
-		InputPath:   "",
-		InputFormat: "tdx.hq.minute_time",
-		Params:      string(params),
-		StartedAt:   started,
-		FinishedAt:  &finished,
-		DurationMS:  &duration,
-		RowsWritten: summary.RowsWritten,
-		RowsSkipped: summary.RowsSkipped,
-		Error:       errText,
-		UpdatedAt:   finished,
-	})
 }
 
 func intradayIssue(runID string, issueType string, market string, symbol string, logicalKey string, message string) model.QualityIssue {

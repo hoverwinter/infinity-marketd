@@ -196,7 +196,7 @@ func TestConsoleTDXQuoteSmokeUpstreamError(t *testing.T) {
 
 func TestConsoleBestIPStatusAndRefresh(t *testing.T) {
 	provider := DefaultTDXProvider()
-	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC() // anchored to real time so the cache ExpiresAt stays in the future
 	provider.LoadHQBestIPCache = func(path string) (tdx.HQBestIPCache, error) {
 		if path != "/tmp/bestip.json" {
 			t.Fatalf("path=%s", path)

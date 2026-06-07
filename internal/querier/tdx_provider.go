@@ -44,6 +44,12 @@ type TDXProvider struct {
 	FetchExTransactions          func(context.Context, tdx.ExQuoteRequest, int, int, tdx.ExQuoteClientOptions) ([]tdx.ExTransaction, error)
 	FetchExHistoryTransactions   func(context.Context, tdx.ExQuoteRequest, int, int, int, tdx.ExQuoteClientOptions) ([]tdx.ExTransaction, error)
 	FetchExHistoryBarsRange      func(context.Context, tdx.ExQuoteRequest, int, int, tdx.ExQuoteClientOptions) ([]tdx.ExBar, error)
+	FetchHQQuotesList            func(context.Context, tdx.HQQuotesListRequest, tdx.QuoteClientOptions) ([]tdx.HQQuotesListItem, error)
+	FetchHQTopBoard              func(context.Context, uint16, int, tdx.QuoteClientOptions) ([]tdx.HQTopBoardGroup, error)
+	FetchHQLHB                   func(context.Context, tdx.HQMinuteRequest, []string, tdx.QuoteClientOptions) (tdx.HQLHBResult, error)
+	FetchSPBoardMembers          func(context.Context, string, string, uint16, int, uint16, time.Duration) ([]tdx.HQBoardMember, error)
+	FetchFundKline               func(context.Context, string, string, string, int, time.Duration) ([]tdx.HQFundBar, error)
+	FetchFundDetail              func(context.Context, string, string, uint16, time.Duration) (tdx.HQFundDetail, error)
 	LoadHQBestIPCache            func(string) (tdx.HQBestIPCache, error)
 	RefreshHQBestIPCache         func(context.Context, []string, tdx.QuoteClientOptions) (tdx.HQBestIPCache, error)
 }
@@ -76,6 +82,12 @@ func DefaultTDXProvider() *TDXProvider {
 		FetchExTransactions:          tdx.FetchExTransactions,
 		FetchExHistoryTransactions:   tdx.FetchExHistoryTransactions,
 		FetchExHistoryBarsRange:      tdx.FetchExHistoryBarsRange,
+		FetchHQQuotesList:            tdx.FetchHQQuotesList,
+		FetchHQTopBoard:              tdx.FetchHQTopBoard,
+		FetchHQLHB:                   tdx.FetchHQLHB,
+		FetchSPBoardMembers:          tdx.FetchSPBoardMembers,
+		FetchFundKline:               tdx.FetchFundKline,
+		FetchFundDetail:              tdx.FetchFundDetail,
 		LoadHQBestIPCache:            tdx.LoadHQBestIPCache,
 		RefreshHQBestIPCache:         tdx.RefreshHQBestIPCache,
 	}
@@ -119,6 +131,12 @@ func (s *Server) registerTDXRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/tdx/hq/block-meta", s.handleTDXHQBlockMeta)
 	mux.HandleFunc("GET /api/tdx/hq/block-chunk", s.handleTDXHQBlockChunk)
 	mux.HandleFunc("GET /api/tdx/hq/block", s.handleTDXHQBlock)
+	mux.HandleFunc("GET /api/tdx/hq/quotes-list", s.handleTDXHQQuotesList)
+	mux.HandleFunc("GET /api/tdx/hq/top-board", s.handleTDXHQTopBoard)
+	mux.HandleFunc("GET /api/tdx/hq/lhb", s.handleTDXHQLHB)
+	mux.HandleFunc("GET /api/tdx/sp/board-members", s.handleTDXSPBoardMembers)
+	mux.HandleFunc("GET /api/tdx/fund/kline", s.handleTDXFundKline)
+	mux.HandleFunc("GET /api/tdx/fund/detail", s.handleTDXFundDetail)
 	mux.HandleFunc("GET /api/tdx/exhq/markets", s.handleTDXExHQMarkets)
 	mux.HandleFunc("GET /api/tdx/exhq/count", s.handleTDXExHQCount)
 	mux.HandleFunc("GET /api/tdx/exhq/instruments", s.handleTDXExHQInstruments)
@@ -586,7 +604,7 @@ func statusForTDXError(err error) int {
 	if strings.Contains(msg, "decode TDX") || strings.Contains(msg, "response too short") || strings.Contains(msg, "response truncated") {
 		return http.StatusBadGateway
 	}
-	if strings.Contains(msg, "failed on") || strings.Contains(msg, "connect TDX") || strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline") {
+	if strings.Contains(msg, "failed on") || strings.Contains(msg, "connect ") || strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline") {
 		return http.StatusServiceUnavailable
 	}
 	return http.StatusInternalServerError

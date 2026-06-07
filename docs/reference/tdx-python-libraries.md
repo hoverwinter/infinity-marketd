@@ -257,3 +257,11 @@ These are not storage fundamentals. They are candidates for a future `/api/tdx/h
 - Implicit persistence from `/api/tdx/*` live provider reads.
 - Automatic destructive schema replacement.
 - Adding cross-row derived metrics to canonical fact tables.
+
+## millken/tdx gap status (updated)
+
+`GetQuotesList`, `GetTopBoard`, `GetBoardMembers` (SP), `GetLHB`, `GetFundKline`,
+and `GetFundDetail` are now covered by marketd's `internal/tdx` advanced online
+APIs (CLI `hq-quotes-list` / `hq-top-board` / `hq-lhb` / `sp-board-members` /
+`fund-kline` / `fund-detail` and `/api/tdx/*` provider endpoints). Decoders are
+ported from millken/tdx with fixture/`net.Pipe` tests; no live-server validation.

@@ -164,6 +164,9 @@ func TestWriteCustomBlockDirBackupFailureDoesNotModifyTarget(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("chmod write denial is platform-specific")
 	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory write permissions, so chmod cannot force a write failure")
+	}
 	dir := t.TempDir()
 	cfg := append(fixedBytes([]byte("Watch"), 50), fixedBytes([]byte("watch"), 70)...)
 	blk := []byte("1600519\n")
