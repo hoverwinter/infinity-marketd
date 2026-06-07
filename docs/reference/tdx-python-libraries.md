@@ -129,7 +129,7 @@ Current coverage:
 | zlib response handling | Implemented |
 | TDX variable integer price decoding | Implemented |
 | five-level depth | Implemented |
-| server probe / fallback | Implemented through `quote-probe` and multi-server quote retry |
+| server probe / fallback | Implemented through `quote-probe`, `quote-bestip`, cached best-server selection, and multi-server quote retry |
 | heartbeat / long-lived reconnect | Not implemented |
 | `bj` realtime quotes | Implemented for verified quote requests |
 | `get_security_bars` / `get_index_bars` | Implemented as `marketd hq-bars` / `marketd hq-index-bars` |
@@ -313,7 +313,7 @@ Frequency aliases and adjustment support are a major convenience layer:
 | mootdx quotes feature | marketd status |
 | --- | --- |
 | standard A-share realtime quote | Implemented through `marketd quote` |
-| server bestip selection | Partially implemented through `marketd quote-probe` |
+| server bestip selection | Implemented through `marketd quote-bestip` cache refresh and `quote --bestip` / `quote-sweep --bestip` |
 | online K-line | Implemented through `marketd hq-bars` / `hq-index-bars` |
 | online minute/time sharing | Implemented through `marketd hq-minute` / `hq-history-minute` |
 | online transaction records | Implemented through `marketd hq-transactions` / `hq-history-transactions` |

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hoverwinter/infinity-marketd/internal/tdx"
 )
@@ -191,6 +192,81 @@ func TestQuoteProbeCommandEmitsJSON(t *testing.T) {
 	}
 	if len(decoded) != 2 || !decoded[0].Preferred {
 		t.Fatalf("decoded = %#v", decoded)
+	}
+}
+
+func TestQuoteBestIPCommandRefreshesCache(t *testing.T) {
+	original := refreshHQBestIPCache
+	defer func() { refreshHQBestIPCache = original }()
+
+	var gotServers []string
+	var gotOpts tdx.QuoteClientOptions
+	refreshHQBestIPCache = func(ctx context.Context, servers []string, opts tdx.QuoteClientOptions) (tdx.HQBestIPCache, error) {
+		gotServers = append([]string(nil), servers...)
+		gotOpts = opts
+		return tdx.HQBestIPCache{
+			Version:   1,
+			Preferred: "fast:7709",
+			Results: []tdx.ServerProbeResult{
+				{Server: "fast:7709", Success: true, LatencyMS: 5, Preferred: true},
+				{Server: "slow:7709", Success: true, LatencyMS: 20},
+			},
+		}, nil
+	}
+
+	cachePath := filepath.Join(t.TempDir(), "bestip.json")
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{
+		"quote-bestip",
+		"--server", "slow:7709,fast:7709",
+		"--cache", cachePath,
+		"--max-age", "2h",
+	}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if strings.Join(gotServers, ",") != "slow:7709,fast:7709" {
+		t.Fatalf("servers = %#v", gotServers)
+	}
+	if gotOpts.BestIPCachePath != cachePath || gotOpts.BestIPMaxAge != 2*time.Hour {
+		t.Fatalf("opts = %#v", gotOpts)
+	}
+	var decoded tdx.HQBestIPCache
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if decoded.Preferred != "fast:7709" {
+		t.Fatalf("decoded = %#v", decoded)
+	}
+}
+
+func TestQuoteCommandWiresBestIPOptions(t *testing.T) {
+	original := fetchRealtimeQuotes
+	defer func() { fetchRealtimeQuotes = original }()
+
+	var gotOpts tdx.QuoteClientOptions
+	fetchRealtimeQuotes = func(ctx context.Context, requests []tdx.QuoteRequest, opts tdx.QuoteClientOptions) ([]tdx.Quote, error) {
+		gotOpts = opts
+		return []tdx.Quote{{Market: "sh", Symbol: "600519", Price: 1}}, nil
+	}
+
+	cachePath := filepath.Join(t.TempDir(), "bestip.json")
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{
+		"quote",
+		"--symbol", "sh:600519",
+		"--bestip",
+		"--bestip-cache", cachePath,
+		"--bestip-max-age", "3h",
+		"--bestip-refresh=false",
+	}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if !gotOpts.BestIP || gotOpts.BestIPCachePath != cachePath || gotOpts.BestIPMaxAge != 3*time.Hour || gotOpts.BestIPRefresh {
+		t.Fatalf("opts = %#v", gotOpts)
 	}
 }
 

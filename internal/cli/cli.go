@@ -21,6 +21,7 @@ import (
 
 var fetchRealtimeQuotes = tdx.FetchRealtimeQuotes
 var probeHQServers = tdx.ProbeHQServers
+var refreshHQBestIPCache = tdx.RefreshHQBestIPCache
 var fetchQuoteSweep = tdx.QuoteSweep
 var fetchHQSecurityBars = tdx.FetchHQSecurityBars
 var fetchHQIndexBars = tdx.FetchHQIndexBars
@@ -67,6 +68,8 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runQuote(ctx, args[1:], stdout, stderr)
 	case "quote-probe":
 		return runQuoteProbe(ctx, args[1:], stdout, stderr)
+	case "quote-bestip":
+		return runQuoteBestIP(ctx, args[1:], stdout, stderr)
 	case "quote-sweep":
 		return runQuoteSweep(ctx, args[1:], stdout, stderr)
 	case "hq-bars":
@@ -159,14 +162,40 @@ func (s *listFlags) Set(value string) error {
 	return nil
 }
 
+type bestIPFlags struct {
+	Enabled   bool
+	CachePath string
+	MaxAge    time.Duration
+	Refresh   bool
+}
+
+func registerBestIPFlags(fs *flag.FlagSet, flags *bestIPFlags) {
+	fs.BoolVar(&flags.Enabled, "bestip", false, "use cached best TDX HQ servers when --server is omitted")
+	fs.StringVar(&flags.CachePath, "bestip-cache", tdx.DefaultHQBestIPCachePath(), "bestip cache file path")
+	fs.DurationVar(&flags.MaxAge, "bestip-max-age", tdx.DefaultHQBestIPMaxAge(), "maximum bestip cache age before refresh")
+	fs.BoolVar(&flags.Refresh, "bestip-refresh", true, "refresh bestip cache when missing or stale")
+}
+
+func applyBestIPFlags(opts *tdx.QuoteClientOptions, flags bestIPFlags) {
+	if !flags.Enabled {
+		return
+	}
+	opts.BestIP = true
+	opts.BestIPCachePath = flags.CachePath
+	opts.BestIPMaxAge = flags.MaxAge
+	opts.BestIPRefresh = flags.Refresh
+}
+
 func runQuote(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	var symbols symbolFlags
 	var servers listFlags
+	var bestIP bestIPFlags
 	var batchSize int
 	var tradeDateText string
 	fs := newFlagSet("quote", stderr)
 	fs.Var(&symbols, "symbol", "symbol to quote; repeat or comma-separate, accepts code or market:code")
 	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	registerBestIPFlags(fs, &bestIP)
 	fs.IntVar(&batchSize, "batch-size", 0, "quote request batch size")
 	fs.StringVar(&tradeDateText, "trade-date", "", "explicit trade date YYYY-MM-DD for quote_time")
 	if err := fs.Parse(args); err != nil {
@@ -185,7 +214,7 @@ func runQuote(ctx context.Context, args []string, stdout io.Writer, stderr io.Wr
 		}
 		requests = append(requests, req)
 	}
-	clientOpts, err := quoteClientOptions([]string(servers), batchSize, tradeDateText)
+	clientOpts, err := quoteClientOptions([]string(servers), batchSize, tradeDateText, bestIP)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
@@ -222,9 +251,61 @@ func runQuoteProbe(ctx context.Context, args []string, stdout io.Writer, stderr 
 	return 0
 }
 
+func runQuoteBestIP(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var servers listFlags
+	var cachePath string
+	var maxAge time.Duration
+	var watch bool
+	var interval time.Duration
+	fs := newFlagSet("quote-bestip", stderr)
+	fs.Var(&servers, "server", "TDX HQ server host:port candidate; repeat or comma-separate")
+	fs.StringVar(&cachePath, "cache", tdx.DefaultHQBestIPCachePath(), "bestip cache file path")
+	fs.DurationVar(&maxAge, "max-age", tdx.DefaultHQBestIPMaxAge(), "cache validity duration")
+	fs.BoolVar(&watch, "watch", false, "keep refreshing the bestip cache until interrupted")
+	fs.DurationVar(&interval, "interval", 30*time.Minute, "refresh interval for --watch")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if maxAge <= 0 {
+		fmt.Fprintln(stderr, "--max-age must be positive")
+		return 2
+	}
+	if watch && interval <= 0 {
+		fmt.Fprintln(stderr, "--interval must be positive")
+		return 2
+	}
+	probeOnce := func() int {
+		cache, err := refreshHQBestIPCache(ctx, []string(servers), tdx.QuoteClientOptions{
+			BestIPCachePath: cachePath,
+			BestIPMaxAge:    maxAge,
+		})
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return writeJSON(stdout, stderr, cache)
+	}
+	if !watch {
+		return probeOnce()
+	}
+	for {
+		if code := probeOnce(); code != 0 {
+			return code
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return 0
+		case <-timer.C:
+		}
+	}
+}
+
 func runQuoteSweep(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	var symbols symbolFlags
 	var servers listFlags
+	var bestIP bestIPFlags
 	var markets listFlags
 	var batchSize int
 	var limit int
@@ -233,6 +314,7 @@ func runQuoteSweep(ctx context.Context, args []string, stdout io.Writer, stderr 
 	fs.Var(&symbols, "symbol", "symbol to quote; repeat or comma-separate, accepts code or market:code")
 	fs.Var(&markets, "market", "market to discover when no symbols are provided; repeat or comma-separate")
 	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	registerBestIPFlags(fs, &bestIP)
 	fs.IntVar(&batchSize, "batch-size", 0, "quote request batch size")
 	fs.IntVar(&limit, "limit", 0, "maximum symbols to quote")
 	fs.StringVar(&tradeDateText, "trade-date", "", "explicit trade date YYYY-MM-DD for quote_time")
@@ -248,7 +330,7 @@ func runQuoteSweep(ctx context.Context, args []string, stdout io.Writer, stderr 
 		}
 		requests = append(requests, req)
 	}
-	clientOpts, err := quoteClientOptions([]string(servers), batchSize, tradeDateText)
+	clientOpts, err := quoteClientOptions([]string(servers), batchSize, tradeDateText, bestIP)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
@@ -864,11 +946,12 @@ func runExQuoteHistoryBars(ctx context.Context, args []string, stdout io.Writer,
 	return writeJSON(stdout, stderr, bars)
 }
 
-func quoteClientOptions(servers []string, batchSize int, tradeDateText string) (tdx.QuoteClientOptions, error) {
+func quoteClientOptions(servers []string, batchSize int, tradeDateText string, bestIP bestIPFlags) (tdx.QuoteClientOptions, error) {
 	opts := tdx.QuoteClientOptions{
 		Servers:   servers,
 		BatchSize: batchSize,
 	}
+	applyBestIPFlags(&opts, bestIP)
 	if tradeDateText == "" {
 		return opts, nil
 	}
@@ -1323,6 +1406,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  import-tdx-vipdoc-zip")
 	fmt.Fprintln(out, "  quote")
 	fmt.Fprintln(out, "  quote-probe")
+	fmt.Fprintln(out, "  quote-bestip")
 	fmt.Fprintln(out, "  quote-sweep")
 	fmt.Fprintln(out, "  hq-bars")
 	fmt.Fprintln(out, "  hq-index-bars")

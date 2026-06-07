@@ -30,6 +30,8 @@ On-demand TDX quote commands:
 ```bash
 go run ./cmd/marketd quote --symbol sh:600519 --server 180.153.18.170:7709
 go run ./cmd/marketd quote-probe --server 180.153.18.170:7709
+go run ./cmd/marketd quote-bestip
+go run ./cmd/marketd quote --symbol sh:600519 --bestip
 go run ./cmd/marketd quote-sweep --market sh --limit 10 --server 180.153.18.170:7709
 
 go run ./cmd/marketd exquote-markets --server 61.152.107.141:7727

@@ -186,6 +186,25 @@ go run ./cmd/marketd quote-probe \
 
 探测结果会把成功 server 排在失败 server 前面，并标记最快成功 server 为 `preferred: true`。
 
+### BestIP 缓存工作流
+
+`quote-probe` 只做一次性探测。完整 bestip 工作流由 `quote-bestip` 提供：
+
+```bash
+go run ./cmd/marketd quote-bestip
+go run ./cmd/marketd quote --symbol sh:600519 --bestip
+go run ./cmd/marketd quote-bestip --watch --interval 30m
+```
+
+行为：
+
+- `quote-bestip` 探测候选 TDX HQ server，按成功状态和延迟排序，并把结果写入本地 JSON cache。
+- cache 默认路径是 `tdx.DefaultHQBestIPCachePath()`，可用 `--cache` 或消费命令的 `--bestip-cache` 覆盖。
+- cache 记录 `generated_at`、`expires_at`、`preferred` 和完整探测结果；消费命令只使用成功 server，并保留延迟排序用于 fallback。
+- `quote` / `quote-sweep` 在显式传入 `--bestip` 且没有 `--server` 时使用 cache；cache 缺失或过期时，默认会刷新一次。
+- `--server` 永远优先于 bestip cache，方便操作员强制指定节点。
+- `quote-bestip --watch --interval 30m` 可作为周期刷新进程运行；不需要 ClickHouse，也不写 market fact 表。
+
 ### 批量请求和连接复用
 
 `quote` 和 `quote-sweep` 支持 `--batch-size`：

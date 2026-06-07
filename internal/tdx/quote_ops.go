@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sort"
 	"strings"
 	"time"
 
@@ -217,7 +216,7 @@ func FetchRealtimeQuoteBatches(ctx context.Context, requests []QuoteRequest, opt
 	}
 	batches := SplitQuoteRequests(requests, batchSize)
 	var attempts []string
-	for _, server := range NormalizeHQServers(opts) {
+	for _, server := range ResolveHQServers(ctx, opts) {
 		session, err := OpenQuoteSession(ctx, server, opts.Timeout)
 		if err != nil {
 			attempts = append(attempts, err.Error())
@@ -302,7 +301,7 @@ func FetchSecurityList(ctx context.Context, market string, opts QuoteClientOptio
 		return nil, fmt.Errorf("unsupported security-list market %q", market)
 	}
 	var attempts []string
-	for _, server := range NormalizeHQServers(opts) {
+	for _, server := range ResolveHQServers(ctx, opts) {
 		session, err := OpenQuoteSession(ctx, server, opts.Timeout)
 		if err != nil {
 			attempts = append(attempts, err.Error())
@@ -499,15 +498,6 @@ func isDecodeError(err error) bool {
 // hiding parser regressions behind transport retries.
 func IsQuoteDecodeError(err error) bool {
 	return err != nil && isDecodeError(err)
-}
-
-func SortProbeResults(results []ServerProbeResult) {
-	sort.SliceStable(results, func(i, j int) bool {
-		if results[i].Success != results[j].Success {
-			return results[i].Success
-		}
-		return results[i].LatencyMS < results[j].LatencyMS
-	})
 }
 
 var _ io.Closer = (*QuoteSession)(nil)

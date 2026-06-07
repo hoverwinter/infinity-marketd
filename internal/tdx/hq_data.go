@@ -487,7 +487,7 @@ func FetchHQBlockMembers(ctx context.Context, file string, opts QuoteClientOptio
 func fetchHQRead[T any](ctx context.Context, opts QuoteClientOptions, label string, fn func(*QuoteSession) (T, error)) (T, error) {
 	var zero T
 	var attempts []string
-	for _, server := range NormalizeHQServers(opts) {
+	for _, server := range ResolveHQServers(ctx, opts) {
 		session, err := OpenQuoteSession(ctx, server, opts.Timeout)
 		if err != nil {
 			attempts = append(attempts, err.Error())

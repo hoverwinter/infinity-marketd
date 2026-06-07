@@ -72,12 +72,16 @@ type QuoteLevel struct {
 }
 
 type QuoteClientOptions struct {
-	Server    string
-	Servers   []string
-	Timeout   time.Duration
-	BatchSize int
-	TradeDate time.Time
-	Location  *time.Location
+	Server          string
+	Servers         []string
+	Timeout         time.Duration
+	BatchSize       int
+	TradeDate       time.Time
+	Location        *time.Location
+	BestIP          bool
+	BestIPCachePath string
+	BestIPMaxAge    time.Duration
+	BestIPRefresh   bool
 }
 
 func ParseQuoteRequest(input string) (QuoteRequest, error) {
