@@ -47,4 +47,4 @@
 - [x] 6.1 Run focused tests for `internal/tdx`, `internal/clickhouse`, `internal/cli`, `internal/querier`, and `internal/infinitycli`.
 - [x] 6.2 Run `make test`.
 - [x] 6.3 Run `openspec validate --all`.
-- [ ] 6.4 Manually dry-run or fixture-test the operator workflow: refresh xdxr, refresh factors, query raw bars, query qfq bars, query hfq bars.
+- [x] 6.4 Manually dry-run or fixture-test the operator workflow: refresh xdxr, refresh factors, query raw bars, query qfq bars, query hfq bars.

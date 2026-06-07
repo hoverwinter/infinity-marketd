@@ -82,6 +82,28 @@ func TestGenerateFactorsMultipleEvents(t *testing.T) {
 	}
 }
 
+func TestGenerateFactorsFutureEventIgnored(t *testing.T) {
+	bars := []model.DailyBar{
+		daily("2026-01-02", 10),
+		daily("2026-01-05", 11),
+	}
+	zero := 0.0
+	ten := 10.0
+	events := []model.XDXREvent{
+		{Market: "sh", Symbol: "600519", EventDate: date("2026-01-06"), Category: 1, FenHong: &zero, PeiGu: &zero, PeiGuJia: &zero, SongZhuanGu: &ten},
+	}
+	factors, issues := GenerateFactors(bars, events, time.Time{})
+	if len(issues) != 1 || issues[0].Type != "future_xdxr_event" {
+		t.Fatalf("issues = %#v", issues)
+	}
+	if !near(*factors[0].QFQFactor, 1) || !near(*factors[1].QFQFactor, 1) {
+		t.Fatalf("qfq factors = %#v", factors)
+	}
+	if !near(*factors[0].HFQFactor, 1) || !near(*factors[1].HFQFactor, 1) {
+		t.Fatalf("hfq factors = %#v", factors)
+	}
+}
+
 func TestGenerateFactorsMissingPreviousCloseProducesNilFactors(t *testing.T) {
 	zero := 0.0
 	ten := 10.0

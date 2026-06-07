@@ -63,7 +63,10 @@ func GenerateFactors(bars []model.DailyBar, events []model.XDXREvent, computedAt
 		return events[i].EventDate.Before(events[j].EventDate)
 	})
 
+	latestBarDate := bars[len(bars)-1].TradeDate
+	events, futureIssues := filterFutureEvents(events, latestBarDate)
 	ratios, issues := eventRatios(bars, events)
+	issues = append(futureIssues, issues...)
 	if hasBlockingIssue(issues) {
 		return nilFactors(bars, computedAt), issues
 	}
@@ -89,6 +92,25 @@ func GenerateFactors(bars []model.DailyBar, events []model.XDXREvent, computedAt
 		})
 	}
 	return factors, issues
+}
+
+func filterFutureEvents(events []model.XDXREvent, latestBarDate time.Time) ([]model.XDXREvent, []Issue) {
+	filtered := make([]model.XDXREvent, 0, len(events))
+	var issues []Issue
+	for _, event := range events {
+		if event.EventDate.After(latestBarDate) {
+			issues = append(issues, Issue{
+				Type:      "future_xdxr_event",
+				Market:    event.Market,
+				Symbol:    event.Symbol,
+				TradeDate: event.EventDate,
+				Message:   fmt.Sprintf("xdxr event after latest daily bar %s ignored by factor refresh", latestBarDate.Format("2006-01-02")),
+			})
+			continue
+		}
+		filtered = append(filtered, event)
+	}
+	return filtered, issues
 }
 
 type eventRatio struct {
