@@ -762,6 +762,5 @@ Existing deployments can add the two new tables non-destructively by running boo
 ## Current Open Questions
 
 - Whether derived daily refresh should be a standalone CLI command or scheduled job.
-- Whether minute scan refresh should be a standalone CLI command, scheduled job, or both.
 - Which scan metrics justify storage beyond `close`, `volume`, `amount`, `minute_ret`, and `volume_ratio`.
 - Whether market fact numeric prices should remain `Float64` or move to fixed decimal types after downstream query needs are clearer.

@@ -26,24 +26,74 @@ func TestImportDryRunCommands(t *testing.T) {
 	writeFile(t, filepath.Join(root, "vipdoc", "sh", "minline", "sh600519.lc1"), lcMinuteRecord(9*60+30))
 	writeFile(t, filepath.Join(root, "vipdoc", "sh", "fzline", "sh600519.lc5"), lcMinuteRecord(9*60+35))
 
-	tests := [][]string{
-		{"import-tdx-day", "--root", root, "--code", "600519", "--dry-run"},
-		{"import-tdx-1m", "--root", root, "--code", "600519", "--dry-run"},
-		{"import-tdx-5m", "--root", root, "--code", "600519", "--dry-run"},
+	tests := []struct {
+		args        []string
+		targetTable string
+	}{
+		{[]string{"import-tdx-day", "--root", root, "--code", "600519", "--dry-run"}, "a_share_bars_1d"},
+		{[]string{"import-tdx-1m", "--root", root, "--code", "600519", "--dry-run"}, "a_share_bars_1m"},
+		{[]string{"import-tdx-5m", "--root", root, "--code", "600519", "--dry-run"}, "a_share_bars_5m"},
 	}
-	for _, args := range tests {
+	for _, tt := range tests {
 		var out bytes.Buffer
 		var errOut bytes.Buffer
-		code := Run(context.Background(), args, &out, &errOut)
+		code := Run(context.Background(), tt.args, &out, &errOut)
 		if code != 0 {
-			t.Fatalf("%v exit %d stderr=%s stdout=%s", args, code, errOut.String(), out.String())
+			t.Fatalf("%v exit %d stderr=%s stdout=%s", tt.args, code, errOut.String(), out.String())
 		}
 		if !strings.Contains(out.String(), "rows_written: 1") {
-			t.Fatalf("%v output missing row count:\n%s", args, out.String())
+			t.Fatalf("%v output missing row count:\n%s", tt.args, out.String())
 		}
 		if !strings.Contains(out.String(), "quality_issues: 0") {
-			t.Fatalf("%v output has quality issue:\n%s", args, out.String())
+			t.Fatalf("%v output has quality issue:\n%s", tt.args, out.String())
 		}
+		if !strings.Contains(out.String(), "target_table: "+tt.targetTable) {
+			t.Fatalf("%v output missing canonical target table %q:\n%s", tt.args, tt.targetTable, out.String())
+		}
+		if strings.Contains(out.String(), "_scan") {
+			t.Fatalf("%v import output unexpectedly references scan table:\n%s", tt.args, out.String())
+		}
+	}
+}
+
+func TestParseMinuteScanRefresh(t *testing.T) {
+	refresh, err := parseMinuteScanRefresh("1m", "2026-06-01", "2026-06-07", "Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refresh.Period != "1m" || refresh.Since.Format("2006-01-02") != "2026-06-01" || refresh.Until.Format("2006-01-02") != "2026-06-07" {
+		t.Fatalf("refresh=%#v", refresh)
+	}
+	if params := minuteScanRefreshParams(refresh); params != "period=1m since=2026-06-01 until=2026-06-07" {
+		t.Fatalf("params=%q", params)
+	}
+}
+
+func TestParseMinuteScanRefreshRequiresBoundedWindow(t *testing.T) {
+	for _, args := range []struct {
+		period string
+		since  string
+		until  string
+	}{
+		{period: "1m", until: "2026-06-07"},
+		{period: "1m", since: "2026-06-01"},
+		{period: "1m", since: "2026-06-08", until: "2026-06-07"},
+	} {
+		if _, err := parseMinuteScanRefresh(args.period, args.since, args.until, "Asia/Shanghai"); err == nil {
+			t.Fatalf("expected error for %#v", args)
+		}
+	}
+}
+
+func TestRefreshMinuteScanCommandRejectsInvalidPeriodBeforeConfig(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"refresh-minute-scan", "--period", "1d", "--since", "2026-06-01", "--until", "2026-06-07", "--dry-run"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if !strings.Contains(errOut.String(), "--period must be 1m or 5m") {
+		t.Fatalf("stderr missing period error:\n%s", errOut.String())
 	}
 }
 

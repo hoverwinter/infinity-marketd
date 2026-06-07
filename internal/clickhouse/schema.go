@@ -71,6 +71,42 @@ ORDER BY (market, symbol, bar_time)`, marketDB),
 ENGINE = ReplacingMergeTree
 PARTITION BY toYYYYMM(trade_date)
 ORDER BY (market, symbol, bar_time)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_bars_1m_scan
+(
+    trade_date Date,
+    bar_time DateTime('Asia/Shanghai'),
+    market LowCardinality(String),
+    symbol String,
+    close Float64,
+    volume UInt64,
+    amount Float64,
+    prev_close Nullable(Float64),
+    minute_ret Nullable(Float64),
+    volume_ratio Nullable(Float64),
+    computed_at DateTime64(3) DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(computed_at)
+PARTITION BY toYYYYMM(trade_date)
+ORDER BY (trade_date, bar_time, market, symbol)
+TTL trade_date + INTERVAL 12 MONTH DELETE`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_bars_5m_scan
+(
+    trade_date Date,
+    bar_time DateTime('Asia/Shanghai'),
+    market LowCardinality(String),
+    symbol String,
+    close Float64,
+    volume UInt64,
+    amount Float64,
+    prev_close Nullable(Float64),
+    minute_ret Nullable(Float64),
+    volume_ratio Nullable(Float64),
+    computed_at DateTime64(3) DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(computed_at)
+PARTITION BY toYYYYMM(trade_date)
+ORDER BY (trade_date, bar_time, market, symbol)
+TTL trade_date + INTERVAL 12 MONTH DELETE`, marketDB),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_financial_raw_items
 (
     market LowCardinality(String),

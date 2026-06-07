@@ -2,6 +2,7 @@ package clickhouse
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,20 +13,41 @@ import (
 )
 
 type fakeConn struct {
-	queries []string
-	batches []*fakeBatch
+	queries      []string
+	queryArgs    [][]any
+	queryRows    []string
+	queryRowArgs [][]any
+	execs        []string
+	execArgs     [][]any
+	batches      []*fakeBatch
+	row          chdriver.Row
 }
 
-func (c *fakeConn) Contributors() []string                                       { return nil }
-func (c *fakeConn) ServerVersion() (*chdriver.ServerVersion, error)              { return nil, nil }
-func (c *fakeConn) Select(context.Context, any, string, ...any) error            { return nil }
-func (c *fakeConn) Query(context.Context, string, ...any) (chdriver.Rows, error) { return nil, nil }
-func (c *fakeConn) QueryRow(context.Context, string, ...any) chdriver.Row        { return nil }
-func (c *fakeConn) Exec(context.Context, string, ...any) error                   { return nil }
-func (c *fakeConn) AsyncInsert(context.Context, string, bool, ...any) error      { return nil }
-func (c *fakeConn) Ping(context.Context) error                                   { return nil }
-func (c *fakeConn) Stats() chdriver.Stats                                        { return chdriver.Stats{} }
-func (c *fakeConn) Close() error                                                 { return nil }
+func (c *fakeConn) Contributors() []string                            { return nil }
+func (c *fakeConn) ServerVersion() (*chdriver.ServerVersion, error)   { return nil, nil }
+func (c *fakeConn) Select(context.Context, any, string, ...any) error { return nil }
+func (c *fakeConn) Query(_ context.Context, query string, args ...any) (chdriver.Rows, error) {
+	c.queries = append(c.queries, query)
+	c.queryArgs = append(c.queryArgs, append([]any(nil), args...))
+	return nil, nil
+}
+func (c *fakeConn) QueryRow(_ context.Context, query string, args ...any) chdriver.Row {
+	c.queryRows = append(c.queryRows, query)
+	c.queryRowArgs = append(c.queryRowArgs, append([]any(nil), args...))
+	if c.row != nil {
+		return c.row
+	}
+	return fakeRow{}
+}
+func (c *fakeConn) Exec(_ context.Context, query string, args ...any) error {
+	c.execs = append(c.execs, query)
+	c.execArgs = append(c.execArgs, append([]any(nil), args...))
+	return nil
+}
+func (c *fakeConn) AsyncInsert(context.Context, string, bool, ...any) error { return nil }
+func (c *fakeConn) Ping(context.Context) error                              { return nil }
+func (c *fakeConn) Stats() chdriver.Stats                                   { return chdriver.Stats{} }
+func (c *fakeConn) Close() error                                            { return nil }
 
 func (c *fakeConn) PrepareBatch(_ context.Context, query string, _ ...chdriver.PrepareBatchOption) (chdriver.Batch, error) {
 	batch := &fakeBatch{}
@@ -55,6 +77,35 @@ func (b *fakeBatch) IsSent() bool                { return b.sent }
 func (b *fakeBatch) Rows() int                   { return len(b.rows) }
 func (b *fakeBatch) Columns() []column.Interface { return nil }
 func (b *fakeBatch) Close() error                { return nil }
+
+type fakeRow struct {
+	values []any
+	err    error
+}
+
+func (r fakeRow) Err() error { return r.err }
+func (r fakeRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	if len(dest) > len(r.values) {
+		return fmt.Errorf("scan destination count %d exceeds values %d", len(dest), len(r.values))
+	}
+	for i := range dest {
+		switch d := dest[i].(type) {
+		case *uint64:
+			v, ok := r.values[i].(uint64)
+			if !ok {
+				return fmt.Errorf("value %d is %T, not uint64", i, r.values[i])
+			}
+			*d = v
+		default:
+			return fmt.Errorf("unsupported scan destination %T", dest[i])
+		}
+	}
+	return nil
+}
+func (r fakeRow) ScanStruct(any) error { return r.err }
 
 func TestInsertIntradayPoints(t *testing.T) {
 	conn := &fakeConn{}
@@ -128,6 +179,83 @@ func TestInsertDailyDerived(t *testing.T) {
 	row := conn.batches[0].rows[0]
 	if row[0] != "sh" || row[1] != "600519" || row[3] != &prevClose || row[4] != &pctChg {
 		t.Fatalf("row=%#v", row)
+	}
+}
+
+func TestRefreshMinuteScanUsesBoundedInsertSelect(t *testing.T) {
+	conn := &fakeConn{row: fakeRow{values: []any{uint64(3)}}}
+	store := &Store{conn: conn, marketDB: "infinity_market", opsDB: "infinity_ops"}
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	since := time.Date(2026, 6, 1, 0, 0, 0, 0, loc)
+	until := time.Date(2026, 6, 7, 0, 0, 0, 0, loc)
+
+	rows, err := store.RefreshMinuteScan(context.Background(), MinuteScanRefresh{Period: "1m", Since: since, Until: until})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 3 {
+		t.Fatalf("rows=%d", rows)
+	}
+	if len(conn.queryRows) != 1 || len(conn.execs) != 1 {
+		t.Fatalf("queryRows=%d execs=%d", len(conn.queryRows), len(conn.execs))
+	}
+	for _, want := range []string{
+		"SELECT count() FROM `infinity_market`.`a_share_bars_1m` FINAL",
+		"WHERE trade_date >= ? AND trade_date <= ?",
+	} {
+		if !strings.Contains(conn.queryRows[0], want) {
+			t.Fatalf("count SQL missing %q:\n%s", want, conn.queryRows[0])
+		}
+	}
+	for _, want := range []string{
+		"INSERT INTO `infinity_market`.`a_share_bars_1m_scan`",
+		"FROM `infinity_market`.`a_share_bars_1m` FINAL",
+		"WHERE trade_date >= ? AND trade_date <= ?",
+		"lagInFrame(toNullable(close), 1)",
+		"minute_ret",
+		"CAST(NULL, 'Nullable(Float64)') AS volume_ratio",
+		"ORDER BY trade_date, bar_time, market, symbol",
+	} {
+		if !strings.Contains(conn.execs[0], want) {
+			t.Fatalf("refresh SQL missing %q:\n%s", want, conn.execs[0])
+		}
+	}
+	for _, forbidden := range []string{"DROP ", "TRUNCATE ", "DETACH ", "DELETE ", "ALTER TABLE"} {
+		if strings.Contains(strings.ToUpper(conn.execs[0]), forbidden) {
+			t.Fatalf("refresh SQL contains destructive operation %q:\n%s", forbidden, conn.execs[0])
+		}
+	}
+	if len(conn.queryRowArgs[0]) != 2 || len(conn.execArgs[0]) != 2 {
+		t.Fatalf("args query=%#v exec=%#v", conn.queryRowArgs[0], conn.execArgs[0])
+	}
+}
+
+func TestRefreshMinuteScanSupportsFiveMinuteSource(t *testing.T) {
+	conn := &fakeConn{row: fakeRow{values: []any{uint64(1)}}}
+	store := &Store{conn: conn, marketDB: "infinity_market", opsDB: "infinity_ops"}
+	day := time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC)
+
+	if _, err := store.RefreshMinuteScan(context.Background(), MinuteScanRefresh{Period: "5m", Since: day, Until: day}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(conn.execs[0], "`infinity_market`.`a_share_bars_5m_scan`") {
+		t.Fatalf("refresh SQL missing 5m scan target:\n%s", conn.execs[0])
+	}
+	if !strings.Contains(conn.execs[0], "`infinity_market`.`a_share_bars_5m`") {
+		t.Fatalf("refresh SQL missing 5m source:\n%s", conn.execs[0])
+	}
+}
+
+func TestRefreshMinuteScanRejectsUnsupportedPeriod(t *testing.T) {
+	conn := &fakeConn{}
+	store := &Store{conn: conn, marketDB: "infinity_market", opsDB: "infinity_ops"}
+	day := time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC)
+
+	if _, err := store.RefreshMinuteScan(context.Background(), MinuteScanRefresh{Period: "1d", Since: day, Until: day}); err == nil {
+		t.Fatal("expected unsupported period error")
+	}
+	if len(conn.queryRows) != 0 || len(conn.execs) != 0 {
+		t.Fatalf("unexpected queries=%d execs=%d", len(conn.queryRows), len(conn.execs))
 	}
 }
 

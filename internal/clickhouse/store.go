@@ -27,6 +27,12 @@ type WatermarkStatus struct {
 	Updated time.Time
 }
 
+type MinuteScanRefresh struct {
+	Period string
+	Since  time.Time
+	Until  time.Time
+}
+
 func Open(ctx context.Context, cfg config.ClickHouseConfig) (*Store, error) {
 	conn, err := ch.Open(&ch.Options{
 		Addr: []string{cfg.Addr},
@@ -141,6 +147,33 @@ func (s *Store) insertMinuteBarsBatch(ctx context.Context, table string, bars []
 		}
 	}
 	return batch.Send()
+}
+
+func (s *Store) CountMinuteScanSourceRows(ctx context.Context, refresh MinuteScanRefresh) (uint64, error) {
+	sourceTable, _, err := minuteScanTables(s.marketDB, refresh.Period)
+	if err != nil {
+		return 0, err
+	}
+	var rows uint64
+	if err := s.conn.QueryRow(ctx, minuteScanCountSQL(sourceTable), refresh.Since, refresh.Until).Scan(&rows); err != nil {
+		return 0, err
+	}
+	return rows, nil
+}
+
+func (s *Store) RefreshMinuteScan(ctx context.Context, refresh MinuteScanRefresh) (uint64, error) {
+	sourceTable, targetTable, err := minuteScanTables(s.marketDB, refresh.Period)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := s.CountMinuteScanSourceRows(ctx, refresh)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.conn.Exec(ctx, minuteScanRefreshSQL(targetTable, sourceTable), refresh.Since, refresh.Until); err != nil {
+		return 0, err
+	}
+	return rows, nil
 }
 
 func (s *Store) InsertFinancialRawItems(ctx context.Context, rows []model.FinancialRawItem) error {
@@ -675,6 +708,63 @@ func nullFloatPtr(value sql.NullFloat64) *float64 {
 		return nil
 	}
 	return &value.Float64
+}
+
+func minuteScanTables(database string, period string) (string, string, error) {
+	source := ""
+	target := ""
+	switch period {
+	case "1m":
+		source = "a_share_bars_1m"
+		target = "a_share_bars_1m_scan"
+	case "5m":
+		source = "a_share_bars_5m"
+		target = "a_share_bars_5m_scan"
+	default:
+		return "", "", fmt.Errorf("unsupported minute scan period %q", period)
+	}
+	sourceTable, err := tableName(database, source)
+	if err != nil {
+		return "", "", err
+	}
+	targetTable, err := tableName(database, target)
+	if err != nil {
+		return "", "", err
+	}
+	return sourceTable, targetTable, nil
+}
+
+func minuteScanCountSQL(sourceTable string) string {
+	return fmt.Sprintf("SELECT count() FROM %s FINAL WHERE trade_date >= ? AND trade_date <= ?", sourceTable)
+}
+
+func minuteScanRefreshSQL(targetTable string, sourceTable string) string {
+	return fmt.Sprintf(`INSERT INTO %s (trade_date, bar_time, market, symbol, close, volume, amount, prev_close, minute_ret, volume_ratio, computed_at)
+SELECT trade_date,
+       bar_time,
+       market,
+       symbol,
+       close,
+       volume,
+       amount,
+       prev_close,
+       if(isNotNull(prev_close) AND prev_close > 0, (close - prev_close) / prev_close * 100, CAST(NULL, 'Nullable(Float64)')) AS minute_ret,
+       CAST(NULL, 'Nullable(Float64)') AS volume_ratio,
+       now64(3) AS computed_at
+FROM
+(
+    SELECT trade_date,
+           bar_time,
+           market,
+           symbol,
+           close,
+           volume,
+           amount,
+           lagInFrame(toNullable(close), 1) OVER (PARTITION BY market, symbol ORDER BY bar_time ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS prev_close
+    FROM %s FINAL
+    WHERE trade_date >= ? AND trade_date <= ?
+)
+ORDER BY trade_date, bar_time, market, symbol`, targetTable, sourceTable)
 }
 
 func issueID(issue model.QualityIssue) string {

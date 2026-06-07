@@ -17,6 +17,8 @@ func TestBootstrapDDL(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_bars_1d",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_bars_1m",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_bars_5m",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_bars_1m_scan",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_bars_5m_scan",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_financial_raw_items",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_gp_metric_values",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.tdx_financial_item_dictionary",
@@ -40,6 +42,7 @@ func TestBootstrapDDL(t *testing.T) {
 		"PARTITION BY toYYYYMM(trade_date)",
 		"ORDER BY (market, symbol, trade_date)",
 		"ORDER BY (market, symbol, bar_time)",
+		"ORDER BY (trade_date, bar_time, market, symbol)",
 		"ORDER BY (market, symbol, report_date, item_id)",
 		"ORDER BY (market, symbol, metric_type, event_date)",
 		"ORDER BY (item_id)",
@@ -65,6 +68,44 @@ func TestBootstrapDDL(t *testing.T) {
 	for _, forbidden := range []string{"source_key", "source_file", "version UInt64", "updated_at", "pct_chg", "fenhong", "peigu", "songzhuangu", "suogu"} {
 		if strings.Contains(marketDDL, forbidden) {
 			t.Fatalf("market DDL contains %q\n%s", forbidden, marketDDL)
+		}
+	}
+	for _, table := range []string{"a_share_bars_1m_scan", "a_share_bars_5m_scan"} {
+		tableDDL := ""
+		for _, stmt := range ddl {
+			if strings.Contains(stmt, table) {
+				tableDDL = stmt
+				break
+			}
+		}
+		if tableDDL == "" {
+			t.Fatalf("missing %s DDL", table)
+		}
+		for _, want := range []string{
+			"trade_date Date",
+			"bar_time DateTime('Asia/Shanghai')",
+			"market LowCardinality(String)",
+			"symbol String",
+			"close Float64",
+			"volume UInt64",
+			"amount Float64",
+			"prev_close Nullable(Float64)",
+			"minute_ret Nullable(Float64)",
+			"volume_ratio Nullable(Float64)",
+			"computed_at DateTime64(3) DEFAULT now64(3)",
+			"ENGINE = ReplacingMergeTree(computed_at)",
+			"PARTITION BY toYYYYMM(trade_date)",
+			"ORDER BY (trade_date, bar_time, market, symbol)",
+			"TTL trade_date + INTERVAL 12 MONTH DELETE",
+		} {
+			if !strings.Contains(tableDDL, want) {
+				t.Fatalf("%s DDL missing %q\n%s", table, want, tableDDL)
+			}
+		}
+		for _, forbidden := range []string{"open ", "high ", "low ", "source_key", "source_file", "version UInt64", "updated_at"} {
+			if strings.Contains(tableDDL, forbidden) {
+				t.Fatalf("%s DDL contains %q\n%s", table, forbidden, tableDDL)
+			}
 		}
 	}
 	intradayDDL := ""

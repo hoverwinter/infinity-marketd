@@ -123,6 +123,8 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runRefreshAdjustFactors(ctx, args[1:], stdout, stderr)
 	case "refresh-daily-derived":
 		return runRefreshDailyDerived(ctx, args[1:], stdout, stderr)
+	case "refresh-minute-scan":
+		return runRefreshMinuteScan(ctx, args[1:], stdout, stderr)
 	case "hq-finance":
 		return runHQFinance(ctx, args[1:], stdout, stderr)
 	case "hq-block-meta":
@@ -631,6 +633,7 @@ type refreshSummary struct {
 	Dataset       string
 	TargetTable   string
 	Asset         string
+	Params        string
 	MinWatermark  *time.Time
 	MaxWatermark  *time.Time
 	RowsWritten   uint64
@@ -814,6 +817,86 @@ func runRefreshAdjustFactors(ctx context.Context, args []string, stdout io.Write
 		message = "completed with quality issues"
 	}
 	if err := recordRefreshSuccess(ctx, store, summary, "adjust_factor_refresh", "derived.adjust_factors_1d", started, message); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printRefreshSummary(stdout, summary)
+	return 0
+}
+
+func runRefreshMinuteScan(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
+	var periodText string
+	var sinceText string
+	var untilText string
+	var dryRun bool
+	fs := newFlagSet("refresh-minute-scan", stderr)
+	config.RegisterCommonFlags(fs, &overrides)
+	fs.StringVar(&periodText, "period", "", "minute period 1m or 5m")
+	fs.StringVar(&sinceText, "since", "", "start trade date YYYY-MM-DD")
+	fs.StringVar(&untilText, "until", "", "end trade date YYYY-MM-DD")
+	fs.BoolVar(&dryRun, "dry-run", false, "count source rows without writing scan rows")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	period, err := normalizeMinuteScanPeriod(periodText)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	cfg, err := config.Load(overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	refresh, err := parseMinuteScanRefresh(period, sinceText, untilText, cfg.Runtime.Timezone)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	store, err := chstore.Open(ctx, cfg.ClickHouse)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer store.Close()
+	runID := newLocalRunID()
+	started := time.Now()
+	targetTable := minuteScanTargetTable(period)
+	summary := refreshSummary{
+		RunID:        runID,
+		Dataset:      targetTable,
+		TargetTable:  targetTable,
+		Asset:        period,
+		Params:       minuteScanRefreshParams(refresh),
+		MinWatermark: &refresh.Since,
+		MaxWatermark: &refresh.Until,
+		DryRun:       dryRun,
+	}
+	var rows uint64
+	if dryRun {
+		rows, err = store.CountMinuteScanSourceRows(ctx, refresh)
+	} else {
+		rows, err = store.RefreshMinuteScan(ctx, refresh)
+	}
+	if err != nil {
+		if !dryRun {
+			recordRefreshFailure(ctx, store, summary, "minute_scan_refresh", "derived.minute_scan", started, err)
+		}
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	summary.RowsWritten = rows
+	if dryRun {
+		printRefreshSummary(stdout, summary)
+		return 0
+	}
+	if err := recordRefreshSuccess(ctx, store, summary, "minute_scan_refresh", "derived.minute_scan", started, "ok"); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
@@ -2525,6 +2608,7 @@ func recordRefreshSuccess(ctx context.Context, store *chstore.Store, summary ref
 	if summary.QualityIssues > 0 {
 		status = "degraded"
 	}
+	params := refreshParams(summary)
 	if err := store.InsertWatermark(ctx, model.Watermark{
 		Dataset:      summary.Dataset,
 		Asset:        summary.Asset,
@@ -2544,7 +2628,7 @@ func recordRefreshSuccess(ctx context.Context, store *chstore.Store, summary ref
 		Status:      status,
 		TargetTable: summary.TargetTable,
 		InputFormat: inputFormat,
-		Params:      "asset=" + summary.Asset,
+		Params:      params,
 		StartedAt:   started,
 		FinishedAt:  &now,
 		DurationMS:  &duration,
@@ -2563,7 +2647,7 @@ func recordRefreshFailure(ctx context.Context, store *chstore.Store, summary ref
 		Status:      "failed",
 		TargetTable: summary.TargetTable,
 		InputFormat: inputFormat,
-		Params:      "asset=" + summary.Asset,
+		Params:      refreshParams(summary),
 		StartedAt:   started,
 		FinishedAt:  &now,
 		DurationMS:  &duration,
@@ -2571,6 +2655,13 @@ func recordRefreshFailure(ctx context.Context, store *chstore.Store, summary ref
 		Error:       err.Error(),
 		UpdatedAt:   now,
 	})
+}
+
+func refreshParams(summary refreshSummary) string {
+	if summary.Params != "" {
+		return summary.Params
+	}
+	return "asset=" + summary.Asset
 }
 
 func qualityIssuesFromAdjust(runID string, dataset string, issues []adjust.Issue) []model.QualityIssue {
@@ -2756,6 +2847,53 @@ func flushAllDailyDerivedBuffers(ctx context.Context, store *chstore.Store, buff
 	return nil
 }
 
+func normalizeMinuteScanPeriod(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1m":
+		return "1m", nil
+	case "5m":
+		return "5m", nil
+	default:
+		return "", fmt.Errorf("--period must be 1m or 5m")
+	}
+}
+
+func minuteScanTargetTable(period string) string {
+	if period == "5m" {
+		return "a_share_bars_5m_scan"
+	}
+	return "a_share_bars_1m_scan"
+}
+
+func parseMinuteScanRefresh(period string, sinceText string, untilText string, timezone string) (chstore.MinuteScanRefresh, error) {
+	if strings.TrimSpace(sinceText) == "" || strings.TrimSpace(untilText) == "" {
+		return chstore.MinuteScanRefresh{}, fmt.Errorf("--since and --until are required")
+	}
+	if timezone == "" {
+		timezone = "Asia/Shanghai"
+	}
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		return chstore.MinuteScanRefresh{}, err
+	}
+	since, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(sinceText), loc)
+	if err != nil {
+		return chstore.MinuteScanRefresh{}, fmt.Errorf("parse --since: %w", err)
+	}
+	until, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(untilText), loc)
+	if err != nil {
+		return chstore.MinuteScanRefresh{}, fmt.Errorf("parse --until: %w", err)
+	}
+	if since.After(until) {
+		return chstore.MinuteScanRefresh{}, fmt.Errorf("--since must be <= --until")
+	}
+	return chstore.MinuteScanRefresh{Period: period, Since: since, Until: until}, nil
+}
+
+func minuteScanRefreshParams(refresh chstore.MinuteScanRefresh) string {
+	return fmt.Sprintf("period=%s since=%s until=%s", refresh.Period, refresh.Since.Format("2006-01-02"), refresh.Until.Format("2006-01-02"))
+}
+
 func parseDailyDerivedRange(sinceText string, untilText string, timezone string) (derived.DailyRange, error) {
 	if timezone == "" {
 		timezone = "Asia/Shanghai"
@@ -2873,6 +3011,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  refresh-tdx-xdxr")
 	fmt.Fprintln(out, "  refresh-adjust-factors")
 	fmt.Fprintln(out, "  refresh-daily-derived")
+	fmt.Fprintln(out, "  refresh-minute-scan")
 	fmt.Fprintln(out, "  hq-finance")
 	fmt.Fprintln(out, "  hq-block-meta")
 	fmt.Fprintln(out, "  hq-block")
