@@ -18,6 +18,7 @@ import (
 	"github.com/hoverwinter/infinity-marketd/internal/adjust"
 	chstore "github.com/hoverwinter/infinity-marketd/internal/clickhouse"
 	"github.com/hoverwinter/infinity-marketd/internal/config"
+	"github.com/hoverwinter/infinity-marketd/internal/derived"
 	"github.com/hoverwinter/infinity-marketd/internal/ingest"
 	"github.com/hoverwinter/infinity-marketd/internal/logging"
 	"github.com/hoverwinter/infinity-marketd/internal/model"
@@ -120,6 +121,8 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runRefreshTDXXDXR(ctx, args[1:], stdout, stderr)
 	case "refresh-adjust-factors":
 		return runRefreshAdjustFactors(ctx, args[1:], stdout, stderr)
+	case "refresh-daily-derived":
+		return runRefreshDailyDerived(ctx, args[1:], stdout, stderr)
 	case "hq-finance":
 		return runHQFinance(ctx, args[1:], stdout, stderr)
 	case "hq-block-meta":
@@ -818,6 +821,93 @@ func runRefreshAdjustFactors(ctx context.Context, args []string, stdout io.Write
 	return 0
 }
 
+func runRefreshDailyDerived(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
+	var market string
+	var symbol string
+	var sinceText string
+	var untilText string
+	var all bool
+	var limit int
+	var offset int
+	var dryRun bool
+	fs := newFlagSet("refresh-daily-derived", stderr)
+	config.RegisterCommonFlags(fs, &overrides)
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	fs.StringVar(&sinceText, "since", "", "start date YYYY-MM-DD")
+	fs.StringVar(&untilText, "until", "", "end date YYYY-MM-DD")
+	fs.BoolVar(&all, "all", false, "refresh daily derived metrics for all symbols present in daily bars")
+	fs.IntVar(&limit, "limit", 0, "maximum symbols to process in --all mode")
+	fs.IntVar(&offset, "offset", 0, "symbols to skip in --all mode")
+	fs.BoolVar(&dryRun, "dry-run", false, "calculate derived metrics without writing ClickHouse")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cfg, err := config.Load(overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	dateRange, err := parseDailyDerivedRange(sinceText, untilText, cfg.Runtime.Timezone)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if all {
+		return runRefreshDailyDerivedAll(ctx, stdout, stderr, cfg, market, limit, offset, dryRun, dateRange)
+	}
+	req, err := tdx.ParseHQMinuteRequest(market, symbol)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	store, err := chstore.Open(ctx, cfg.ClickHouse)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer store.Close()
+	runID := newLocalRunID()
+	started := time.Now()
+	bars, err := store.DailyBarsForSymbol(ctx, req.Market, req.Symbol)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	rows := derived.GenerateDaily(bars, dateRange, time.Now())
+	summary := refreshSummary{
+		RunID:        runID,
+		Dataset:      "a_share_daily_derived",
+		TargetTable:  "a_share_daily_derived",
+		Asset:        req.Market + ":" + req.Symbol,
+		MinWatermark: dailyDerivedMinDate(rows),
+		MaxWatermark: dailyDerivedMaxDate(rows),
+		RowsWritten:  uint64(len(rows)),
+		DryRun:       dryRun,
+	}
+	if dryRun {
+		printRefreshSummary(stdout, summary)
+		return 0
+	}
+	if err := store.InsertDailyDerived(ctx, rows); err != nil {
+		recordRefreshFailure(ctx, store, summary, "daily_derived_refresh", "derived.daily_ohlcv", started, err)
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if err := recordRefreshSuccess(ctx, store, summary, "daily_derived_refresh", "derived.daily_ohlcv", started, "ok"); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printRefreshSummary(stdout, summary)
+	return 0
+}
+
 func runRefreshTDXXDXRAll(ctx context.Context, stdout io.Writer, stderr io.Writer, overrides config.Overrides, market string, servers []string, limit int, offset int, workers int, dryRun bool) int {
 	if err := validateOptionalMarket(market); err != nil {
 		fmt.Fprintln(stderr, err)
@@ -1026,6 +1116,81 @@ func runRefreshAdjustFactorsAll(ctx context.Context, stdout io.Writer, stderr io
 			message = "completed with quality issues"
 		}
 		if err := recordRefreshSuccess(ctx, store, total, "adjust_factor_refresh", "derived.adjust_factors_1d", started, message); err != nil {
+			fmt.Fprintf(stderr, "ops: %v\n", err)
+			return 1
+		}
+	}
+	printRefreshSummary(stdout, total)
+	return 0
+}
+
+func runRefreshDailyDerivedAll(ctx context.Context, stdout io.Writer, stderr io.Writer, cfg config.Config, market string, limit int, offset int, dryRun bool, dateRange derived.DailyRange) int {
+	if err := validateOptionalMarket(market); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if offset < 0 || limit < 0 {
+		fmt.Fprintln(stderr, "--offset and --limit must be non-negative")
+		return 2
+	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	store, err := chstore.Open(ctx, cfg.ClickHouse)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer store.Close()
+	symbols, err := store.DailySymbols(ctx, market)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	symbols = sliceSymbols(symbols, offset, limit)
+	total := refreshSummary{RunID: newLocalRunID(), Dataset: "a_share_daily_derived", TargetTable: "a_share_daily_derived", Asset: "all", DryRun: dryRun}
+	if market != "" {
+		total.Asset = market + ":all"
+	}
+	buffers := map[string][]model.DailyDerived{}
+	flushThreshold := cfg.Runtime.BatchSize * 10
+	if flushThreshold < 100000 {
+		flushThreshold = 100000
+	}
+	for i, item := range symbols {
+		bars, err := store.DailyBarsForSymbol(ctx, item.Market, item.Symbol)
+		if err != nil {
+			fmt.Fprintf(stderr, "daily bars %s:%s: %v\n", item.Market, item.Symbol, err)
+			return 1
+		}
+		rows := derived.GenerateDaily(bars, dateRange, time.Now())
+		mergeDailyDerivedWatermarks(&total, rows)
+		total.RowsWritten += uint64(len(rows))
+		if !dryRun {
+			for _, row := range rows {
+				year := row.TradeDate.Format("2006")
+				buffers[year] = append(buffers[year], row)
+			}
+			if err := flushLargeDailyDerivedBuffers(ctx, store, buffers, flushThreshold); err != nil {
+				recordRefreshFailure(ctx, store, total, "daily_derived_refresh", "derived.daily_ohlcv", time.Now(), err)
+				fmt.Fprintf(stderr, "write daily derived: %v\n", err)
+				return 1
+			}
+		}
+		if i == 0 || (i+1)%100 == 0 || i+1 == len(symbols) {
+			fmt.Fprintf(stderr, "processed daily derived %d/%d rows=%d issues=%d\n", i+1, len(symbols), total.RowsWritten, total.QualityIssues)
+		}
+	}
+	if !dryRun {
+		started := time.Now()
+		if err := flushAllDailyDerivedBuffers(ctx, store, buffers); err != nil {
+			recordRefreshFailure(ctx, store, total, "daily_derived_refresh", "derived.daily_ohlcv", started, err)
+			fmt.Fprintf(stderr, "write daily derived: %v\n", err)
+			return 1
+		}
+		if err := recordRefreshSuccess(ctx, store, total, "daily_derived_refresh", "derived.daily_ohlcv", started, "ok"); err != nil {
 			fmt.Fprintf(stderr, "ops: %v\n", err)
 			return 1
 		}
@@ -2502,6 +2667,43 @@ func mergeFactorWatermarks(summary *refreshSummary, factors []model.AdjustFactor
 	}
 }
 
+func dailyDerivedMinDate(rows []model.DailyDerived) *time.Time {
+	if len(rows) == 0 {
+		return nil
+	}
+	min := rows[0].TradeDate
+	for _, row := range rows[1:] {
+		if row.TradeDate.Before(min) {
+			min = row.TradeDate
+		}
+	}
+	return &min
+}
+
+func dailyDerivedMaxDate(rows []model.DailyDerived) *time.Time {
+	if len(rows) == 0 {
+		return nil
+	}
+	max := rows[0].TradeDate
+	for _, row := range rows[1:] {
+		if row.TradeDate.After(max) {
+			max = row.TradeDate
+		}
+	}
+	return &max
+}
+
+func mergeDailyDerivedWatermarks(summary *refreshSummary, rows []model.DailyDerived) {
+	minDate := dailyDerivedMinDate(rows)
+	maxDate := dailyDerivedMaxDate(rows)
+	if minDate != nil && (summary.MinWatermark == nil || minDate.Before(*summary.MinWatermark)) {
+		summary.MinWatermark = minDate
+	}
+	if maxDate != nil && (summary.MaxWatermark == nil || maxDate.After(*summary.MaxWatermark)) {
+		summary.MaxWatermark = maxDate
+	}
+}
+
 func flushLargeFactorBuffers(ctx context.Context, store *chstore.Store, buffers map[string][]model.AdjustFactor, threshold int) error {
 	for year, factors := range buffers {
 		if len(factors) < threshold {
@@ -2526,6 +2728,61 @@ func flushAllFactorBuffers(ctx context.Context, store *chstore.Store, buffers ma
 		buffers[year] = factors[:0]
 	}
 	return nil
+}
+
+func flushLargeDailyDerivedBuffers(ctx context.Context, store *chstore.Store, buffers map[string][]model.DailyDerived, threshold int) error {
+	for year, rows := range buffers {
+		if len(rows) < threshold {
+			continue
+		}
+		if err := store.InsertDailyDerived(ctx, rows); err != nil {
+			return err
+		}
+		buffers[year] = rows[:0]
+	}
+	return nil
+}
+
+func flushAllDailyDerivedBuffers(ctx context.Context, store *chstore.Store, buffers map[string][]model.DailyDerived) error {
+	for year, rows := range buffers {
+		if len(rows) == 0 {
+			continue
+		}
+		if err := store.InsertDailyDerived(ctx, rows); err != nil {
+			return fmt.Errorf("year %s: %w", year, err)
+		}
+		buffers[year] = rows[:0]
+	}
+	return nil
+}
+
+func parseDailyDerivedRange(sinceText string, untilText string, timezone string) (derived.DailyRange, error) {
+	if timezone == "" {
+		timezone = "Asia/Shanghai"
+	}
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		return derived.DailyRange{}, err
+	}
+	var r derived.DailyRange
+	if strings.TrimSpace(sinceText) != "" {
+		since, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(sinceText), loc)
+		if err != nil {
+			return derived.DailyRange{}, fmt.Errorf("parse --since: %w", err)
+		}
+		r.Since = &since
+	}
+	if strings.TrimSpace(untilText) != "" {
+		until, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(untilText), loc)
+		if err != nil {
+			return derived.DailyRange{}, fmt.Errorf("parse --until: %w", err)
+		}
+		r.Until = &until
+	}
+	if r.Since != nil && r.Until != nil && r.Since.After(*r.Until) {
+		return derived.DailyRange{}, fmt.Errorf("--since must be <= --until")
+	}
+	return r, nil
 }
 
 func validateOptionalMarket(market string) error {
@@ -2615,6 +2872,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  hq-xdxr")
 	fmt.Fprintln(out, "  refresh-tdx-xdxr")
 	fmt.Fprintln(out, "  refresh-adjust-factors")
+	fmt.Fprintln(out, "  refresh-daily-derived")
 	fmt.Fprintln(out, "  hq-finance")
 	fmt.Fprintln(out, "  hq-block-meta")
 	fmt.Fprintln(out, "  hq-block")

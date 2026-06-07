@@ -70,6 +70,15 @@ type AdjustFactor struct {
 	ComputedAt time.Time
 }
 
+type DailyDerived struct {
+	Market     string
+	Symbol     string
+	TradeDate  time.Time
+	PrevClose  *float64
+	PctChg     *float64
+	ComputedAt time.Time
+}
+
 type CapitalChangeEvent struct {
 	Market           string
 	Symbol           string

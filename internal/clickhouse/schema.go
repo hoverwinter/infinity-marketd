@@ -133,17 +133,17 @@ ENGINE = ReplacingMergeTree
 PARTITION BY toYYYYMM(trade_date)
 ORDER BY (market, symbol, trade_date, point_time)`, marketDB),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_daily_derived
-		(
-		    market LowCardinality(String),
-	    symbol String,
-	    trade_date Date,
+(
+    market LowCardinality(String),
+    symbol String,
+    trade_date Date,
     prev_close Nullable(Float64),
     pct_chg Nullable(Float64),
     computed_at DateTime64(3) DEFAULT now64(3)
 )
-	ENGINE = ReplacingMergeTree(computed_at)
-	PARTITION BY toYear(trade_date)
-	ORDER BY (trade_date, market, symbol)`, marketDB),
+ENGINE = ReplacingMergeTree(computed_at)
+PARTITION BY toYear(trade_date)
+ORDER BY (trade_date, market, symbol)`, marketDB),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_xdxr_events
 	(
 	    market LowCardinality(String),

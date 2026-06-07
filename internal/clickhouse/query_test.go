@@ -132,3 +132,20 @@ func TestAdjustedBarsSQLWithBoundsJoinsFactors(t *testing.T) {
 		}
 	}
 }
+
+func TestDailyPctChgScanSQLUsesDerivedTable(t *testing.T) {
+	stmt := dailyPctChgScanSQL("db.a_share_daily_derived")
+	for _, want := range []string{
+		"FROM db.a_share_daily_derived FINAL",
+		"trade_date = ?",
+		"pct_chg > ?",
+		"ORDER BY pct_chg DESC",
+	} {
+		if !strings.Contains(stmt, want) {
+			t.Fatalf("stmt=%s missing %s", stmt, want)
+		}
+	}
+	if strings.Contains(stmt, "a_share_bars_1d") {
+		t.Fatalf("scan should not use raw fact table: %s", stmt)
+	}
+}

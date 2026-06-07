@@ -274,6 +274,10 @@ func barsSQL(table string, columns string, where string, timeColumn string, limi
 	return fmt.Sprintf("SELECT %s FROM (SELECT %s FROM %s WHERE %s ORDER BY %s DESC LIMIT %d) ORDER BY %s ASC", columns, columns, table, where, timeColumn, limit, timeColumn)
 }
 
+func dailyPctChgScanSQL(derivedTable string) string {
+	return fmt.Sprintf("SELECT market, symbol, trade_date, prev_close, pct_chg FROM %s FINAL WHERE trade_date = ? AND pct_chg > ? ORDER BY pct_chg DESC", derivedTable)
+}
+
 func factorColumnForAdjust(adjust string) string {
 	if adjust == "hfq" {
 		return "hfq_factor"

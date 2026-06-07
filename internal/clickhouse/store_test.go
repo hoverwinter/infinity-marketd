@@ -100,6 +100,37 @@ func TestInsertIntradayPointsEmptyBatch(t *testing.T) {
 	}
 }
 
+func TestInsertDailyDerived(t *testing.T) {
+	conn := &fakeConn{}
+	store := &Store{conn: conn, marketDB: "infinity_market", opsDB: "infinity_ops"}
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	tradeDate := time.Date(2026, 6, 5, 0, 0, 0, 0, loc)
+	prevClose := 10.0
+	pctChg := 12.3
+
+	err := store.InsertDailyDerived(context.Background(), []model.DailyDerived{
+		{Market: "sh", Symbol: "600519", TradeDate: tradeDate, PrevClose: &prevClose, PctChg: &pctChg},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conn.queries) != 1 {
+		t.Fatalf("queries=%d", len(conn.queries))
+	}
+	for _, want := range []string{
+		"INSERT INTO `infinity_market`.`a_share_daily_derived`",
+		"(market, symbol, trade_date, prev_close, pct_chg, computed_at)",
+	} {
+		if !strings.Contains(conn.queries[0], want) {
+			t.Fatalf("query missing %q: %s", want, conn.queries[0])
+		}
+	}
+	row := conn.batches[0].rows[0]
+	if row[0] != "sh" || row[1] != "600519" || row[3] != &prevClose || row[4] != &pctChg {
+		t.Fatalf("row=%#v", row)
+	}
+}
+
 func TestInsertLocalReferenceTables(t *testing.T) {
 	ctx := context.Background()
 	loc, _ := time.LoadLocation("Asia/Shanghai")
@@ -203,6 +234,9 @@ func TestInsertLocalReferenceTablesEmptyBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.InsertExDailyBars(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertDailyDerived(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(conn.queries) != 0 {

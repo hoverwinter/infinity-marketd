@@ -347,6 +347,50 @@ func (s *Store) InsertAdjustFactors(ctx context.Context, factors []model.AdjustF
 	return batch.Send()
 }
 
+func (s *Store) InsertDailyDerived(ctx context.Context, rows []model.DailyDerived) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	for start := 0; start < len(rows); {
+		partitions := map[string]struct{}{dailyPartitionKey(rows[start].TradeDate): {}}
+		end := start + 1
+		for end < len(rows) {
+			partition := dailyPartitionKey(rows[end].TradeDate)
+			if _, exists := partitions[partition]; !exists && len(partitions) >= maxPartitionsPerInsertBlock {
+				break
+			}
+			partitions[partition] = struct{}{}
+			end++
+		}
+		if err := s.insertDailyDerivedBatch(ctx, rows[start:end]); err != nil {
+			return err
+		}
+		start = end
+	}
+	return nil
+}
+
+func (s *Store) insertDailyDerivedBatch(ctx context.Context, rows []model.DailyDerived) error {
+	table, err := tableName(s.marketDB, "a_share_daily_derived")
+	if err != nil {
+		return err
+	}
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO "+table+" (market, symbol, trade_date, prev_close, pct_chg, computed_at) VALUES")
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		computedAt := row.ComputedAt
+		if computedAt.IsZero() {
+			computedAt = time.Now()
+		}
+		if err := batch.Append(row.Market, row.Symbol, row.TradeDate, row.PrevClose, row.PctChg, computedAt); err != nil {
+			return err
+		}
+	}
+	return batch.Send()
+}
+
 func (s *Store) InsertCapitalChangeEvents(ctx context.Context, events []model.CapitalChangeEvent) error {
 	if len(events) == 0 {
 		return nil
