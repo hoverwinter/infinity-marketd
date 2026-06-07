@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hoverwinter/infinity-marketd/internal/adjust"
@@ -642,6 +643,7 @@ func runRefreshTDXXDXR(ctx context.Context, args []string, stdout io.Writer, std
 	var all bool
 	var limit int
 	var offset int
+	var workers int
 	var dryRun bool
 	fs := newFlagSet("refresh-tdx-xdxr", stderr)
 	config.RegisterCommonFlags(fs, &overrides)
@@ -650,13 +652,14 @@ func runRefreshTDXXDXR(ctx context.Context, args []string, stdout io.Writer, std
 	fs.BoolVar(&all, "all", false, "refresh xdxr for all symbols present in daily bars")
 	fs.IntVar(&limit, "limit", 0, "maximum symbols to process in --all mode")
 	fs.IntVar(&offset, "offset", 0, "symbols to skip in --all mode")
+	fs.IntVar(&workers, "workers", 8, "concurrent TDX requests in --all mode")
 	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
 	fs.BoolVar(&dryRun, "dry-run", false, "fetch and normalize without writing ClickHouse")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if all {
-		return runRefreshTDXXDXRAll(ctx, stdout, stderr, overrides, market, []string(servers), limit, offset, dryRun)
+		return runRefreshTDXXDXRAll(ctx, stdout, stderr, overrides, market, []string(servers), limit, offset, workers, dryRun)
 	}
 	req, err := tdx.ParseHQMinuteRequest(market, symbol)
 	if err != nil {
@@ -815,13 +818,17 @@ func runRefreshAdjustFactors(ctx context.Context, args []string, stdout io.Write
 	return 0
 }
 
-func runRefreshTDXXDXRAll(ctx context.Context, stdout io.Writer, stderr io.Writer, overrides config.Overrides, market string, servers []string, limit int, offset int, dryRun bool) int {
+func runRefreshTDXXDXRAll(ctx context.Context, stdout io.Writer, stderr io.Writer, overrides config.Overrides, market string, servers []string, limit int, offset int, workers int, dryRun bool) int {
 	if err := validateOptionalMarket(market); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
 	if offset < 0 || limit < 0 {
 		fmt.Fprintln(stderr, "--offset and --limit must be non-negative")
+		return 2
+	}
+	if workers <= 0 {
+		fmt.Fprintln(stderr, "--workers must be positive")
 		return 2
 	}
 	cfg, err := config.Load(overrides)
@@ -851,49 +858,80 @@ func runRefreshTDXXDXRAll(ctx context.Context, stdout io.Writer, stderr io.Write
 		total.Asset = market + ":all"
 	}
 	opts := hqClientOptions(servers)
-	for i, item := range symbols {
-		req := tdx.HQMinuteRequest{Market: item.Market, Symbol: item.Symbol}
-		runID := newLocalRunID()
-		started := time.Now()
-		rows, err := fetchHQXDXRInfo(ctx, req, opts)
-		if err != nil {
-			total.QualityIssues++
-			fmt.Fprintf(stderr, "xdxr %s:%s: %v\n", item.Market, item.Symbol, err)
-			continue
-		}
-		events, adjustIssues := adjust.NormalizeXDXR(rows)
-		summary := refreshSummary{
-			RunID:         runID,
-			Dataset:       "a_share_xdxr_events",
-			TargetTable:   "a_share_xdxr_events",
-			Asset:         item.Market + ":" + item.Symbol,
-			MinWatermark:  xdxrMinDate(events),
-			MaxWatermark:  xdxrMaxDate(events),
-			RowsWritten:   uint64(len(events)),
-			QualityIssues: len(adjustIssues),
-			DryRun:        dryRun,
-		}
-		total.RowsWritten += summary.RowsWritten
-		total.QualityIssues += summary.QualityIssues
-		if !dryRun {
-			if err := store.InsertXDXREvents(ctx, events); err != nil {
-				recordRefreshFailure(ctx, store, summary, "tdx_xdxr_refresh", "tdx.hq.xdxr", started, err)
-				fmt.Fprintf(stderr, "write xdxr %s: %v\n", summary.Asset, err)
-				return 1
+	jobs := make(chan model.Symbol)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var firstErr error
+	processed := 0
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for item := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				req := tdx.HQMinuteRequest{Market: item.Market, Symbol: item.Symbol}
+				runID := newLocalRunID()
+				started := time.Now()
+				rows, err := fetchHQXDXRInfo(ctx, req, opts)
+				if err != nil {
+					mu.Lock()
+					total.QualityIssues++
+					processed++
+					fmt.Fprintf(stderr, "xdxr %s:%s: %v\n", item.Market, item.Symbol, err)
+					printXDXRProgress(stderr, processed, len(symbols), total)
+					mu.Unlock()
+					continue
+				}
+				events, adjustIssues := adjust.NormalizeXDXR(rows)
+				summary := refreshSummary{
+					RunID:         runID,
+					Dataset:       "a_share_xdxr_events",
+					TargetTable:   "a_share_xdxr_events",
+					Asset:         item.Market + ":" + item.Symbol,
+					MinWatermark:  xdxrMinDate(events),
+					MaxWatermark:  xdxrMaxDate(events),
+					RowsWritten:   uint64(len(events)),
+					QualityIssues: len(adjustIssues),
+					DryRun:        dryRun,
+				}
+				mu.Lock()
+				if firstErr == nil {
+					total.RowsWritten += summary.RowsWritten
+					total.QualityIssues += summary.QualityIssues
+					if !dryRun {
+						if err := store.InsertXDXREvents(ctx, events); err != nil {
+							recordRefreshFailure(ctx, store, summary, "tdx_xdxr_refresh", "tdx.hq.xdxr", started, err)
+							firstErr = fmt.Errorf("write xdxr %s: %w", summary.Asset, err)
+						} else if err := store.InsertQualityIssues(ctx, qualityIssuesFromAdjust(runID, summary.Dataset, adjustIssues)); err != nil {
+							recordRefreshFailure(ctx, store, summary, "tdx_xdxr_refresh", "tdx.hq.xdxr", started, err)
+							firstErr = fmt.Errorf("quality issues %s: %w", summary.Asset, err)
+						} else if err := recordRefreshSuccess(ctx, store, summary, "tdx_xdxr_refresh", "tdx.hq.xdxr", started, "ok"); err != nil {
+							firstErr = fmt.Errorf("ops %s: %w", summary.Asset, err)
+						}
+					}
+				}
+				processed++
+				printXDXRProgress(stderr, processed, len(symbols), total)
+				mu.Unlock()
 			}
-			if err := store.InsertQualityIssues(ctx, qualityIssuesFromAdjust(runID, summary.Dataset, adjustIssues)); err != nil {
-				recordRefreshFailure(ctx, store, summary, "tdx_xdxr_refresh", "tdx.hq.xdxr", started, err)
-				fmt.Fprintf(stderr, "quality issues %s: %v\n", summary.Asset, err)
-				return 1
-			}
-			if err := recordRefreshSuccess(ctx, store, summary, "tdx_xdxr_refresh", "tdx.hq.xdxr", started, "ok"); err != nil {
-				fmt.Fprintf(stderr, "ops %s: %v\n", summary.Asset, err)
-				return 1
-			}
+		}()
+	}
+	for _, item := range symbols {
+		mu.Lock()
+		shouldStop := firstErr != nil
+		mu.Unlock()
+		if shouldStop {
+			break
 		}
-		if i == 0 || (i+1)%100 == 0 || i+1 == len(symbols) {
-			fmt.Fprintf(stderr, "processed xdxr %d/%d rows=%d issues=%d\n", i+1, len(symbols), total.RowsWritten, total.QualityIssues)
-		}
+		jobs <- item
+	}
+	close(jobs)
+	wg.Wait()
+	if firstErr != nil {
+		fmt.Fprintln(stderr, firstErr)
+		return 1
 	}
 	printRefreshSummary(stdout, total)
 	return 0
@@ -934,9 +972,13 @@ func runRefreshAdjustFactorsAll(ctx context.Context, stdout io.Writer, stderr io
 	if market != "" {
 		total.Asset = market + ":all"
 	}
+	factorBuffers := map[string][]model.AdjustFactor{}
+	var allIssues []adjust.Issue
+	flushThreshold := cfg.Runtime.BatchSize * 10
+	if flushThreshold < 100000 {
+		flushThreshold = 100000
+	}
 	for i, item := range symbols {
-		runID := newLocalRunID()
-		started := time.Now()
 		bars, err := store.DailyBarsForSymbol(ctx, item.Market, item.Symbol)
 		if err != nil {
 			fmt.Fprintf(stderr, "daily bars %s:%s: %v\n", item.Market, item.Symbol, err)
@@ -948,41 +990,44 @@ func runRefreshAdjustFactorsAll(ctx context.Context, stdout io.Writer, stderr io
 			return 1
 		}
 		factors, adjustIssues := adjust.GenerateFactors(bars, events, time.Now())
-		summary := refreshSummary{
-			RunID:         runID,
-			Dataset:       "a_share_adjust_factors_1d",
-			TargetTable:   "a_share_adjust_factors_1d",
-			Asset:         item.Market + ":" + item.Symbol,
-			MinWatermark:  factorMinDate(factors),
-			MaxWatermark:  factorMaxDate(factors),
-			RowsWritten:   uint64(len(factors)),
-			QualityIssues: len(adjustIssues),
-			DryRun:        dryRun,
-		}
-		total.RowsWritten += summary.RowsWritten
-		total.QualityIssues += summary.QualityIssues
+		mergeFactorWatermarks(&total, factors)
+		total.RowsWritten += uint64(len(factors))
+		total.QualityIssues += len(adjustIssues)
+		allIssues = append(allIssues, adjustIssues...)
 		if !dryRun {
-			if err := store.InsertAdjustFactors(ctx, factors); err != nil {
-				recordRefreshFailure(ctx, store, summary, "adjust_factor_refresh", "derived.adjust_factors_1d", started, err)
-				fmt.Fprintf(stderr, "write factors %s: %v\n", summary.Asset, err)
-				return 1
+			for _, factor := range factors {
+				year := factor.TradeDate.Format("2006")
+				factorBuffers[year] = append(factorBuffers[year], factor)
 			}
-			if err := store.InsertQualityIssues(ctx, qualityIssuesFromAdjust(runID, summary.Dataset, adjustIssues)); err != nil {
-				recordRefreshFailure(ctx, store, summary, "adjust_factor_refresh", "derived.adjust_factors_1d", started, err)
-				fmt.Fprintf(stderr, "quality issues %s: %v\n", summary.Asset, err)
-				return 1
-			}
-			message := "ok"
-			if len(adjustIssues) > 0 {
-				message = "completed with quality issues"
-			}
-			if err := recordRefreshSuccess(ctx, store, summary, "adjust_factor_refresh", "derived.adjust_factors_1d", started, message); err != nil {
-				fmt.Fprintf(stderr, "ops %s: %v\n", summary.Asset, err)
+			if err := flushLargeFactorBuffers(ctx, store, factorBuffers, flushThreshold); err != nil {
+				recordRefreshFailure(ctx, store, total, "adjust_factor_refresh", "derived.adjust_factors_1d", time.Now(), err)
+				fmt.Fprintf(stderr, "write factors: %v\n", err)
 				return 1
 			}
 		}
 		if i == 0 || (i+1)%100 == 0 || i+1 == len(symbols) {
 			fmt.Fprintf(stderr, "processed factors %d/%d rows=%d issues=%d\n", i+1, len(symbols), total.RowsWritten, total.QualityIssues)
+		}
+	}
+	if !dryRun {
+		started := time.Now()
+		if err := flushAllFactorBuffers(ctx, store, factorBuffers); err != nil {
+			recordRefreshFailure(ctx, store, total, "adjust_factor_refresh", "derived.adjust_factors_1d", started, err)
+			fmt.Fprintf(stderr, "write factors: %v\n", err)
+			return 1
+		}
+		if err := store.InsertQualityIssues(ctx, qualityIssuesFromAdjust(total.RunID, total.Dataset, allIssues)); err != nil {
+			recordRefreshFailure(ctx, store, total, "adjust_factor_refresh", "derived.adjust_factors_1d", started, err)
+			fmt.Fprintf(stderr, "quality issues: %v\n", err)
+			return 1
+		}
+		message := "ok"
+		if len(allIssues) > 0 {
+			message = "completed with quality issues"
+		}
+		if err := recordRefreshSuccess(ctx, store, total, "adjust_factor_refresh", "derived.adjust_factors_1d", started, message); err != nil {
+			fmt.Fprintf(stderr, "ops: %v\n", err)
+			return 1
 		}
 	}
 	printRefreshSummary(stdout, total)
@@ -2446,6 +2491,43 @@ func factorMaxDate(factors []model.AdjustFactor) *time.Time {
 	return &max
 }
 
+func mergeFactorWatermarks(summary *refreshSummary, factors []model.AdjustFactor) {
+	minDate := factorMinDate(factors)
+	maxDate := factorMaxDate(factors)
+	if minDate != nil && (summary.MinWatermark == nil || minDate.Before(*summary.MinWatermark)) {
+		summary.MinWatermark = minDate
+	}
+	if maxDate != nil && (summary.MaxWatermark == nil || maxDate.After(*summary.MaxWatermark)) {
+		summary.MaxWatermark = maxDate
+	}
+}
+
+func flushLargeFactorBuffers(ctx context.Context, store *chstore.Store, buffers map[string][]model.AdjustFactor, threshold int) error {
+	for year, factors := range buffers {
+		if len(factors) < threshold {
+			continue
+		}
+		if err := store.InsertAdjustFactors(ctx, factors); err != nil {
+			return err
+		}
+		buffers[year] = factors[:0]
+	}
+	return nil
+}
+
+func flushAllFactorBuffers(ctx context.Context, store *chstore.Store, buffers map[string][]model.AdjustFactor) error {
+	for year, factors := range buffers {
+		if len(factors) == 0 {
+			continue
+		}
+		if err := store.InsertAdjustFactors(ctx, factors); err != nil {
+			return fmt.Errorf("year %s: %w", year, err)
+		}
+		buffers[year] = factors[:0]
+	}
+	return nil
+}
+
 func validateOptionalMarket(market string) error {
 	switch strings.TrimSpace(market) {
 	case "", "sh", "sz", "bj":
@@ -2464,6 +2546,12 @@ func sliceSymbols(symbols []model.Symbol, offset int, limit int) []model.Symbol 
 		return symbols[:limit]
 	}
 	return symbols
+}
+
+func printXDXRProgress(stderr io.Writer, processed int, totalSymbols int, summary refreshSummary) {
+	if processed == 1 || processed%100 == 0 || processed == totalSymbols {
+		fmt.Fprintf(stderr, "processed xdxr %d/%d rows=%d issues=%d\n", processed, totalSymbols, summary.RowsWritten, summary.QualityIssues)
+	}
 }
 
 func newLocalRunID() string {
