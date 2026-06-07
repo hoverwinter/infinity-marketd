@@ -64,6 +64,10 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runImport(ctx, args[1:], stdout, stderr, tdx.Period5m)
 	case "import-tdx-vipdoc-zip":
 		return runImportVIPDocZip(ctx, args[1:], stdout, stderr)
+	case "import-tdx-fin":
+		return runImportTDXFinancial(ctx, args[1:], stdout, stderr)
+	case "import-tdx-gp":
+		return runImportTDXGP(ctx, args[1:], stdout, stderr)
 	case "quote":
 		return runQuote(ctx, args[1:], stdout, stderr)
 	case "quote-probe":
@@ -1222,6 +1226,114 @@ func runImportVIPDocZip(ctx context.Context, args []string, stdout io.Writer, st
 	return 0
 }
 
+func runImportTDXFinancial(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
+	var file string
+	var dryRun bool
+	fs := newFlagSet("import-tdx-fin", stderr)
+	config.RegisterCommonFlags(fs, &overrides)
+	fs.StringVar(&file, "file", "", "tdxfin zip file")
+	fs.BoolVar(&dryRun, "dry-run", false, "parse and summarize without writing")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(file) == "" {
+		fmt.Fprintln(stderr, "--file is required")
+		return 2
+	}
+	cfg, err := config.Load(overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	var store *chstore.Store
+	if !dryRun {
+		store, err = chstore.Open(ctx, cfg.ClickHouse)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer store.Close()
+	}
+	summary, err := ingest.ImportTDXFinancial(ctx, ingest.TDXFinancialOptions{
+		File:      file,
+		DryRun:    dryRun,
+		Store:     store,
+		Timezone:  cfg.Runtime.Timezone,
+		BatchSize: cfg.Runtime.BatchSize,
+		Progress: func(processed int, total int, summary ingest.TDXFinancialSummary) {
+			if processed == 1 || processed%10 == 0 || processed == total {
+				fmt.Fprintf(stderr, "processed %d/%d files, rows=%d, issues=%d\n", processed, total, summary.RowsWritten, summary.QualityIssues)
+			}
+		},
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printTDXFinancialSummary(stdout, summary)
+	return 0
+}
+
+func runImportTDXGP(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
+	var file string
+	var dryRun bool
+	fs := newFlagSet("import-tdx-gp", stderr)
+	config.RegisterCommonFlags(fs, &overrides)
+	fs.StringVar(&file, "file", "", "tdxgp zip file")
+	fs.BoolVar(&dryRun, "dry-run", false, "parse and summarize without writing")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(file) == "" {
+		fmt.Fprintln(stderr, "--file is required")
+		return 2
+	}
+	cfg, err := config.Load(overrides)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	cleanup, ok := setupLogging(cfg, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	var store *chstore.Store
+	if !dryRun {
+		store, err = chstore.Open(ctx, cfg.ClickHouse)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer store.Close()
+	}
+	summary, err := ingest.ImportTDXGP(ctx, ingest.TDXGPOptions{
+		File:      file,
+		DryRun:    dryRun,
+		Store:     store,
+		Timezone:  cfg.Runtime.Timezone,
+		BatchSize: cfg.Runtime.BatchSize,
+		Progress: func(processed int, total int, summary ingest.TDXGPSummary) {
+			if processed == 1 || processed%500 == 0 || processed == total {
+				fmt.Fprintf(stderr, "processed %d/%d files, rows=%d, issues=%d\n", processed, total, summary.RowsWritten, summary.QualityIssues)
+			}
+		},
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printTDXFinancialSummary(stdout, summary)
+	return 0
+}
+
 type bulkImportOptions struct {
 	Period    tdx.Period
 	Root      string
@@ -1376,6 +1488,26 @@ func printVIPDocZipSummary(out io.Writer, summary ingest.VIPDocZipSummary) {
 	fmt.Fprintf(out, "quality_issues: %d\n", summary.QualityIssues)
 }
 
+func printTDXFinancialSummary(out io.Writer, summary ingest.TDXFinancialSummary) {
+	mode := "write"
+	if summary.DryRun {
+		mode = "dry-run"
+	}
+	fmt.Fprintf(out, "mode: %s\n", mode)
+	fmt.Fprintf(out, "dataset: %s\n", summary.Dataset)
+	fmt.Fprintf(out, "target_table: %s\n", summary.TargetTable)
+	fmt.Fprintf(out, "input_path: %s\n", summary.InputPath)
+	fmt.Fprintf(out, "input_format: %s\n", summary.InputFormat)
+	fmt.Fprintf(out, "files_discovered: %d\n", summary.FilesDiscovered)
+	fmt.Fprintf(out, "files_processed: %d\n", summary.FilesProcessed)
+	fmt.Fprintf(out, "manifest_files: %d\n", summary.ManifestFiles)
+	fmt.Fprintf(out, "dictionary_count: %d\n", summary.DictionaryCount)
+	fmt.Fprintf(out, "rows_written: %d\n", summary.RowsWritten)
+	fmt.Fprintf(out, "rows_skipped: %d\n", summary.RowsSkipped)
+	fmt.Fprintf(out, "manifest_issues: %d\n", summary.ManifestIssues)
+	fmt.Fprintf(out, "quality_issues: %d\n", summary.QualityIssues)
+}
+
 func setupLogging(cfg config.Config, stderr io.Writer) (func(), bool) {
 	_, cleanup, err := logging.InitGlobal(cfg.Logging)
 	if err != nil {
@@ -1404,6 +1536,8 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  import-tdx-1m")
 	fmt.Fprintln(out, "  import-tdx-5m")
 	fmt.Fprintln(out, "  import-tdx-vipdoc-zip")
+	fmt.Fprintln(out, "  import-tdx-fin")
+	fmt.Fprintln(out, "  import-tdx-gp")
 	fmt.Fprintln(out, "  quote")
 	fmt.Fprintln(out, "  quote-probe")
 	fmt.Fprintln(out, "  quote-bestip")

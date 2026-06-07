@@ -17,13 +17,23 @@ func TestBootstrapDDL(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_bars_1d",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_bars_1m",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_bars_5m",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_financial_raw_items",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_gp_metric_values",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.tdx_financial_item_dictionary",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.tdx_gp_metric_dictionary",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_daily_derived",
 		"CREATE TABLE IF NOT EXISTS `infinity_ops`.watermarks",
 		"ENGINE = ReplacingMergeTree",
 		"PARTITION BY toYear(trade_date)",
 		"PARTITION BY toYYYYMM(trade_date)",
+		"PARTITION BY toYear(report_date)",
+		"PARTITION BY toYear(event_date)",
 		"ORDER BY (market, symbol, trade_date)",
 		"ORDER BY (market, symbol, bar_time)",
+		"ORDER BY (market, symbol, report_date, item_id)",
+		"ORDER BY (market, symbol, metric_type, event_date)",
+		"ORDER BY (item_id)",
+		"ORDER BY (metric_type)",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("DDL missing %q\n%s", want, joined)
@@ -33,6 +43,27 @@ func TestBootstrapDDL(t *testing.T) {
 	for _, forbidden := range []string{"source_key", "source_file", "version UInt64", "updated_at", "pct_chg"} {
 		if strings.Contains(marketDDL, forbidden) {
 			t.Fatalf("market DDL contains %q\n%s", forbidden, marketDDL)
+		}
+	}
+
+	financialRawDDL := ""
+	gpMetricDDL := ""
+	for _, stmt := range ddl {
+		if strings.Contains(stmt, "a_share_financial_raw_items") {
+			financialRawDDL = stmt
+		}
+		if strings.Contains(stmt, "a_share_gp_metric_values") {
+			gpMetricDDL = stmt
+		}
+	}
+	if financialRawDDL == "" || gpMetricDDL == "" {
+		t.Fatal("missing financial raw DDL")
+	}
+	for _, stmt := range []string{financialRawDDL, gpMetricDDL} {
+		for _, forbidden := range []string{"source_key", "source_file", "version UInt64", "updated_at"} {
+			if strings.Contains(stmt, forbidden) {
+				t.Fatalf("financial raw DDL contains %q\n%s", forbidden, stmt)
+			}
 		}
 	}
 }

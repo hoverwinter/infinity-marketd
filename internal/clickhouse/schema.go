@@ -71,6 +71,54 @@ ORDER BY (market, symbol, bar_time)`, marketDB),
 ENGINE = ReplacingMergeTree
 PARTITION BY toYYYYMM(trade_date)
 ORDER BY (market, symbol, bar_time)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_financial_raw_items
+(
+    market LowCardinality(String),
+    symbol String,
+    report_date Date,
+    item_id UInt16,
+    value Float64
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(report_date)
+ORDER BY (market, symbol, report_date, item_id)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_gp_metric_values
+(
+    market LowCardinality(String),
+    symbol String,
+    metric_type UInt16,
+    event_date Date,
+    value1 Float64,
+    value2 Float64
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(event_date)
+ORDER BY (market, symbol, metric_type, event_date)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.tdx_financial_item_dictionary
+(
+    item_id UInt16,
+    name String,
+    title String,
+    category LowCardinality(String),
+    unit LowCardinality(String),
+    value_kind LowCardinality(String),
+    source_ref String,
+    status LowCardinality(String)
+)
+ENGINE = ReplacingMergeTree
+ORDER BY (item_id)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.tdx_gp_metric_dictionary
+(
+    metric_type UInt16,
+    name String,
+    title String,
+    value1_meaning String,
+    value2_meaning String,
+    source_ref String,
+    status LowCardinality(String)
+)
+ENGINE = ReplacingMergeTree
+ORDER BY (metric_type)`, marketDB),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_daily_derived
 (
     market LowCardinality(String),

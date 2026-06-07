@@ -188,6 +188,98 @@ market + symbol + bar_time
 
 5-minute bars stay separate from 1-minute bars. Do not combine them into one table with `bar_interval`.
 
+### infinity_market.a_share_financial_raw_items
+
+Canonical raw TDX professional financial item facts from `tdxfin.zip`.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_financial_raw_items
+(
+    market LowCardinality(String),
+    symbol String,
+    report_date Date,
+    item_id UInt16,
+    value Float64
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(report_date)
+ORDER BY (market, symbol, report_date, item_id);
+```
+
+Logical key:
+
+```text
+market + symbol + report_date + item_id
+```
+
+This table stores normalized raw facts only. It does not store `source`, `version`, `updated_at`, announcement-date interpretation, or a derived wide financial row. Dictionary metadata for `item_id` lives in repo metadata and is synchronized to `tdx_financial_item_dictionary`.
+
+### infinity_market.a_share_gp_metric_values
+
+Canonical raw TDX stock trading/metric values from `tdxgp.zip`.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_gp_metric_values
+(
+    market LowCardinality(String),
+    symbol String,
+    metric_type UInt16,
+    event_date Date,
+    value1 Float64,
+    value2 Float64
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(event_date)
+ORDER BY (market, symbol, metric_type, event_date);
+```
+
+Logical key:
+
+```text
+market + symbol + metric_type + event_date
+```
+
+This table stores raw `GP01..GP46` series values. It intentionally keeps `value1/value2` narrow and defers semantic widening to explicit downstream jobs.
+
+### infinity_market.tdx_financial_item_dictionary
+
+ClickHouse lookup copy of `internal/tdx/finance/metadata/financial_items.csv`.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.tdx_financial_item_dictionary
+(
+    item_id UInt16,
+    name String,
+    title String,
+    category LowCardinality(String),
+    unit LowCardinality(String),
+    value_kind LowCardinality(String),
+    source_ref String,
+    status LowCardinality(String)
+)
+ENGINE = ReplacingMergeTree
+ORDER BY (item_id);
+```
+
+### infinity_market.tdx_gp_metric_dictionary
+
+ClickHouse lookup copy of `internal/tdx/finance/metadata/gp_metrics.csv`.
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.tdx_gp_metric_dictionary
+(
+    metric_type UInt16,
+    name String,
+    title String,
+    value1_meaning String,
+    value2_meaning String,
+    source_ref String,
+    status LowCardinality(String)
+)
+ENGINE = ReplacingMergeTree
+ORDER BY (metric_type);
+```
+
 ### infinity_market.a_share_bars_1m_scan
 
 Short-retention 1-minute scan data rebuilt from canonical 1-minute facts.
@@ -407,6 +499,8 @@ Offline imports are raw data ingestion only:
 ```text
 import-tdx-1m -> writes a_share_bars_1m only
 import-tdx-5m -> writes a_share_bars_5m only
+import-tdx-fin -> syncs tdx_financial_item_dictionary, writes a_share_financial_raw_items only
+import-tdx-gp -> syncs tdx_gp_metric_dictionary, writes a_share_gp_metric_values only
 ```
 
 Scan tables are refreshed separately, for example:
@@ -417,6 +511,8 @@ marketd refresh-minute-scan --period 5m --since 2026-06-01 --until 2026-06-07
 ```
 
 This keeps large offline backfills deterministic and prevents hidden write amplification. Operators decide when to pay the scan refresh cost.
+
+Financial wide tables follow the same explicit refresh rule. `import-tdx-fin` and `import-tdx-gp` do not generate wide financial snapshots, factors, or scan tables as hidden side effects.
 
 ## Current Open Questions
 

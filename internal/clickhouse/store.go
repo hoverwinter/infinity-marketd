@@ -142,6 +142,126 @@ func (s *Store) insertMinuteBarsBatch(ctx context.Context, table string, bars []
 	return batch.Send()
 }
 
+func (s *Store) InsertFinancialRawItems(ctx context.Context, rows []model.FinancialRawItem) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	for start := 0; start < len(rows); {
+		partitions := map[string]struct{}{dailyPartitionKey(rows[start].ReportDate): {}}
+		end := start + 1
+		for end < len(rows) {
+			partition := dailyPartitionKey(rows[end].ReportDate)
+			if _, exists := partitions[partition]; !exists && len(partitions) >= maxPartitionsPerInsertBlock {
+				break
+			}
+			partitions[partition] = struct{}{}
+			end++
+		}
+		if err := s.insertFinancialRawItemsBatch(ctx, rows[start:end]); err != nil {
+			return err
+		}
+		start = end
+	}
+	return nil
+}
+
+func (s *Store) insertFinancialRawItemsBatch(ctx context.Context, rows []model.FinancialRawItem) error {
+	table, err := tableName(s.marketDB, "a_share_financial_raw_items")
+	if err != nil {
+		return err
+	}
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO "+table+" (market, symbol, report_date, item_id, value) VALUES")
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if err := batch.Append(row.Market, row.Symbol, row.ReportDate, row.ItemID, row.Value); err != nil {
+			return err
+		}
+	}
+	return batch.Send()
+}
+
+func (s *Store) InsertGPMetricValues(ctx context.Context, rows []model.GPMetricValue) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	for start := 0; start < len(rows); {
+		partitions := map[string]struct{}{dailyPartitionKey(rows[start].EventDate): {}}
+		end := start + 1
+		for end < len(rows) {
+			partition := dailyPartitionKey(rows[end].EventDate)
+			if _, exists := partitions[partition]; !exists && len(partitions) >= maxPartitionsPerInsertBlock {
+				break
+			}
+			partitions[partition] = struct{}{}
+			end++
+		}
+		if err := s.insertGPMetricValuesBatch(ctx, rows[start:end]); err != nil {
+			return err
+		}
+		start = end
+	}
+	return nil
+}
+
+func (s *Store) insertGPMetricValuesBatch(ctx context.Context, rows []model.GPMetricValue) error {
+	table, err := tableName(s.marketDB, "a_share_gp_metric_values")
+	if err != nil {
+		return err
+	}
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO "+table+" (market, symbol, metric_type, event_date, value1, value2) VALUES")
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if err := batch.Append(row.Market, row.Symbol, row.MetricType, row.EventDate, row.Value1, row.Value2); err != nil {
+			return err
+		}
+	}
+	return batch.Send()
+}
+
+func (s *Store) InsertFinancialItemDictionary(ctx context.Context, rows []model.FinancialItemDictionaryEntry) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	table, err := tableName(s.marketDB, "tdx_financial_item_dictionary")
+	if err != nil {
+		return err
+	}
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO "+table+" (item_id, name, title, category, unit, value_kind, source_ref, status) VALUES")
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if err := batch.Append(row.ItemID, row.Name, row.Title, row.Category, row.Unit, row.ValueKind, row.SourceRef, row.Status); err != nil {
+			return err
+		}
+	}
+	return batch.Send()
+}
+
+func (s *Store) InsertGPMetricDictionary(ctx context.Context, rows []model.GPMetricDictionaryEntry) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	table, err := tableName(s.marketDB, "tdx_gp_metric_dictionary")
+	if err != nil {
+		return err
+	}
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO "+table+" (metric_type, name, title, value1_meaning, value2_meaning, source_ref, status) VALUES")
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if err := batch.Append(row.MetricType, row.Name, row.Title, row.Value1Meaning, row.Value2Meaning, row.SourceRef, row.Status); err != nil {
+			return err
+		}
+	}
+	return batch.Send()
+}
+
 func (s *Store) InsertTaskRun(ctx context.Context, run model.TaskRun) error {
 	return s.InsertTaskRuns(ctx, []model.TaskRun{run})
 }

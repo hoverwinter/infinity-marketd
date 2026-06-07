@@ -93,6 +93,74 @@ func TestImportVIPDocZipDryRunCommand(t *testing.T) {
 	}
 }
 
+func TestImportTDXFinancialDryRunCommand(t *testing.T) {
+	root := t.TempDir()
+	raw := readTestFile(t, filepath.Join("..", "tdx", "testdata", "finance", "gpcw_one_stock.dat"))
+	zipPath := filepath.Join(root, "tdxfin.zip")
+	writeZip(t, zipPath, map[string][]byte{
+		"gpcw.txt":         []byte("gpcw20251231.dat,d41d8cd98f00b204e9800998ecf8427e,47\r\n"),
+		"gpcw20251231.dat": raw,
+	})
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"import-tdx-fin", "--file", zipPath, "--dry-run"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	for _, want := range []string{
+		"mode: dry-run",
+		"dataset: a_share_financial_raw_items",
+		"files_discovered: 1",
+		"files_processed: 1",
+		"dictionary_count: 584",
+		"rows_written: 4",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestImportTDXGPDryRunCommand(t *testing.T) {
+	root := t.TempDir()
+	raw := readTestFile(t, filepath.Join("..", "tdx", "testdata", "finance", "gpbj430017_two_records.dat"))
+	zipPath := filepath.Join(root, "tdxgp.zip")
+	writeZip(t, zipPath, map[string][]byte{
+		"gpszsh.txt":     []byte("gpbj430017.dat,d41d8cd98f00b204e9800998ecf8427e,26\r\n"),
+		"gpszsh.local":   []byte("[MD5]\r\ngpbj430017.dat=d41d8cd98f00b204e9800998ecf8427e\r\n"),
+		"gpbj430017.dat": raw,
+	})
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"import-tdx-gp", "--file", zipPath, "--dry-run"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	for _, want := range []string{
+		"mode: dry-run",
+		"dataset: a_share_gp_metric_values",
+		"files_discovered: 1",
+		"files_processed: 1",
+		"dictionary_count: 46",
+		"rows_written: 2",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestImportTDXFinancialMissingFile(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"import-tdx-fin", "--file", filepath.Join(t.TempDir(), "missing.zip"), "--dry-run"}, &out, &errOut)
+	if code == 0 || !strings.Contains(errOut.String(), "no such file") {
+		t.Fatalf("exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+}
+
 func TestQuoteCommandEmitsJSONAndUsesServerOverride(t *testing.T) {
 	original := fetchRealtimeQuotes
 	defer func() { fetchRealtimeQuotes = original }()
@@ -738,6 +806,15 @@ func writeFile(t *testing.T, path string, data []byte) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func readTestFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func writeZip(t *testing.T, path string, files map[string][]byte) {

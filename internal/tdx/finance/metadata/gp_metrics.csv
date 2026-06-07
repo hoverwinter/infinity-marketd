@@ -1,0 +1,47 @@
+metric_type,name,title,value1_meaning,value2_meaning,status,source_ref
+1,gp01,股东人数,股东户数(户),,confirmed,TdxQuant.get_gpjy_value
+2,gp02,龙虎榜 注：该指标展示20230717日之后的数据,买入总计(万元),卖出总计(万元),confirmed,TdxQuant.get_gpjy_value
+3,gp03,融资融券1,融资余额(万元),融券余量(股),confirmed,TdxQuant.get_gpjy_value
+4,gp04,大宗交易,成交均价(元),成交额(万元),confirmed,TdxQuant.get_gpjy_value
+5,gp05,增减持1,成交均价(元),变动股数(股),confirmed,TdxQuant.get_gpjy_value
+6,gp06,陆股通持股量 注：该指标展示20170317日之后的数据,持股数量(股),,confirmed,TdxQuant.get_gpjy_value
+7,gp07,陆股通市场成交净额 注：官方只公布了每日的前十名数据,陆股通市场净买入(万元),,confirmed,TdxQuant.get_gpjy_value
+8,gp08,龙虎榜机构(卖方)数据,卖方机构个数,机构卖出金额(万元),confirmed,TdxQuant.get_gpjy_value
+9,gp09,龙虎榜机构(买方)数据,买方机构个数,机构买入金额(万元),confirmed,TdxQuant.get_gpjy_value
+10,gp10,近3月机构调研情况,近3月机构调研次数,近3月调研机构数量,confirmed,TdxQuant.get_gpjy_value
+11,gp11,融资融券2,融资买入额(万元),融资偿还额(万元),confirmed,TdxQuant.get_gpjy_value
+12,gp12,融资融券3,融券卖出量(股),融券偿还量(股),confirmed,TdxQuant.get_gpjy_value
+13,gp13,融资融券4,融资净买入(万元),融券净卖出(股),confirmed,TdxQuant.get_gpjy_value
+14,gp14,涨停数据 注：该指标展示20180319日之后的数据,"涨停金额(即板上成交,万元)",开板次数,confirmed,TdxQuant.get_gpjy_value
+15,gp15,"涨跌停 注：涨停取2,曾涨停取1,跌停取-2,曾跌停取-1;跌停和曾跌停时,封单金额取负值 该指标展示20160926日之后的数据",涨跌停状态,封单金额(万元),confirmed,TdxQuant.get_gpjy_value
+16,gp16,总市值,总市值(万元),,confirmed,TdxQuant.get_gpjy_value
+17,gp17,龙虎榜营业部数据,买入金额(万元),卖出金额(万元),confirmed,TdxQuant.get_gpjy_value
+18,gp18,龙虎榜沪深股通数据,买入金额(万元),卖出金额(万元),confirmed,TdxQuant.get_gpjy_value
+19,gp19,每周股票质押数量 注：该指标展示20180316日之后的数据,无限售股份质押数(万),有限售股份质押数(万),confirmed,TdxQuant.get_gpjy_value
+20,gp20,每周股票质押比例 注：该指标展示20180316日之后的数据,质押比例(%),,confirmed,TdxQuant.get_gpjy_value
+21,gp21,股息率,股息率(%),,confirmed,TdxQuant.get_gpjy_value
+22,gp22,涨跌停 注：该指标展示20180319日之后的数据,封成比,封流比,confirmed,TdxQuant.get_gpjy_value
+23,gp23,拟增减持,拟增持数量(万股),拟减持数量(万股),confirmed,TdxQuant.get_gpjy_value
+24,gp24,涨停 注：首次涨停时间展示20160301之后的数据，涨停最大封单额展示20200730之后的数据,首次涨停时间,涨停最大封单额(万),confirmed,TdxQuant.get_gpjy_value
+25,gp25,盘前盘后成交量 注：盘后固定成交量只包含科创板和创业板,开盘成交量(手),盘后固定成交量(手),confirmed,TdxQuant.get_gpjy_value
+26,gp26,拟增减持金额,拟增持金额(万元),拟减持金额(万元),confirmed,TdxQuant.get_gpjy_value
+27,gp27,人气排名 注：行业排名为通达信二级研究行业排名,市场人气排名,行业人气排名,confirmed,TdxQuant.get_gpjy_value
+28,gp28,股票回购,回购均价(元),回购数量(万股),confirmed,TdxQuant.get_gpjy_value
+29,gp29,证券信息 注：是否复牌日说明：0-不是复牌日，n(n>0)-停牌n个交易日之后的复牌日；是否更名日说明：0-未更名，1-常规更名，2-加ST，3-加*ST，4-摘帽，5-其他,是否复牌日,是否更名日,confirmed,TdxQuant.get_gpjy_value
+30,gp30,分红送转 注：对应展示日期为除权除息日,派息金额(万元),送转数量(股),confirmed,TdxQuant.get_gpjy_value
+31,gp31,转融券,期初余量(股),期末余量(股),confirmed,TdxQuant.get_gpjy_value
+32,gp32,转融券,融出数量(股),融出市值(元),confirmed,TdxQuant.get_gpjy_value
+33,gp33,"跌停数据 注：该指标展示20180319日之后的数据,暂无跌停金额数据",跌停金额(万元),开板次数,confirmed,TdxQuant.get_gpjy_value
+34,gp34,跌停 注：首次跌停时间展示20160301之后的数据，跌停最大封单额展示20200730之后的数据,首次跌停时间,跌停最大封单额(万),confirmed,TdxQuant.get_gpjy_value
+35,gp35,增减持2,增持数量(股),减持数量(股),confirmed,TdxQuant.get_gpjy_value
+36,gp36,竞价涨停买 注：该指标展示20241101日之后的数据,买入金额(万元),,confirmed,TdxQuant.get_gpjy_value
+37,gp37,龙虎榜2 注：该指标展示上榜类型中指代的连续交易日类型,上榜类型连续交易日(天),,confirmed,TdxQuant.get_gpjy_value
+38,gp38,涨停相关1,近1年涨停次数,近1年溢价5%次数,confirmed,TdxQuant.get_gpjy_value
+39,gp39,涨停相关2,近1年首板封板率(%),近1年次日红盘率(%),confirmed,TdxQuant.get_gpjy_value
+40,gp40,涨停相关3,近1年连板率(%),最后涨停时间,confirmed,TdxQuant.get_gpjy_value
+41,gp41,股权登记日,配股股权登记日,,confirmed,TdxQuant.get_gpjy_value
+42,gp42,龙虎榜专业机构买卖净额,买方成交净额(万元),卖方成交净额(万元),confirmed,TdxQuant.get_gpjy_value
+43,gp43,配股实施,配股价格(元),配股数量(万股),confirmed,TdxQuant.get_gpjy_value
+44,gp44,股票评分,综合评分,,confirmed,TdxQuant.get_gpjy_value
+45,gp45,评级系数,评级系数,,confirmed,TdxQuant.get_gpjy_value
+46,gp46,拟询价转让,拟转让股数(万股),拟转让占总股本(%),confirmed,TdxQuant.get_gpjy_value
