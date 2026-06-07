@@ -12,10 +12,12 @@ import (
 )
 
 type fakeRepo struct {
-	healthErr     error
-	query         BarQuery
-	intradayQuery IntradayPointQuery
-	limit         int
+	healthErr          error
+	query              BarQuery
+	intradayQuery      IntradayPointQuery
+	limit              int
+	emptyConsole       bool
+	nilQuoteRunMarkets bool
 }
 
 func (r *fakeRepo) Health(context.Context) error {
@@ -72,6 +74,9 @@ func (r *fakeRepo) IntradayPoints(_ context.Context, query IntradayPointQuery) (
 
 func (r *fakeRepo) ConsoleWatermarks(_ context.Context, limit int) ([]ConsoleWatermark, error) {
 	r.limit = limit
+	if r.emptyConsole {
+		return nil, nil
+	}
 	return []ConsoleWatermark{{
 		Dataset:     "tdx-day",
 		Asset:       "sh:600519",
@@ -84,6 +89,9 @@ func (r *fakeRepo) ConsoleWatermarks(_ context.Context, limit int) ([]ConsoleWat
 
 func (r *fakeRepo) ConsoleTaskRuns(_ context.Context, limit int) ([]ConsoleTaskRun, error) {
 	r.limit = limit
+	if r.emptyConsole {
+		return nil, nil
+	}
 	return []ConsoleTaskRun{{
 		RunID:       "run-1",
 		Dataset:     "tdx-day",
@@ -98,6 +106,9 @@ func (r *fakeRepo) ConsoleTaskRuns(_ context.Context, limit int) ([]ConsoleTaskR
 
 func (r *fakeRepo) ConsoleDataQualityIssues(_ context.Context, limit int) ([]ConsoleDataQualityIssue, error) {
 	r.limit = limit
+	if r.emptyConsole {
+		return nil, nil
+	}
 	return []ConsoleDataQualityIssue{{
 		IssueID:    "issue-1",
 		RunID:      "run-1",
@@ -114,15 +125,25 @@ func (r *fakeRepo) ConsoleDataQualityIssues(_ context.Context, limit int) ([]Con
 
 func (r *fakeRepo) ConsoleDataQualityIssueStats(_ context.Context, limit int) ([]ConsoleQualityIssueStat, error) {
 	r.limit = limit
+	if r.emptyConsole {
+		return nil, nil
+	}
 	return []ConsoleQualityIssueStat{{Dataset: "tdx-day", Severity: "warn", IssueType: "duplicate", Count: 1}}, nil
 }
 
 func (r *fakeRepo) ConsoleQuoteServiceRuns(_ context.Context, limit int) ([]ConsoleQuoteServiceRun, error) {
 	r.limit = limit
+	if r.emptyConsole {
+		return nil, nil
+	}
+	markets := []string{"sh", "sz"}
+	if r.nilQuoteRunMarkets {
+		markets = nil
+	}
 	return []ConsoleQuoteServiceRun{{
 		RunID:          "quote-run-1",
 		Status:         "succeeded",
-		Markets:        []string{"sh", "sz"},
+		Markets:        markets,
 		SymbolSource:   "online",
 		BatchSize:      80,
 		PlannedBatches: 1,

@@ -41,6 +41,55 @@ func TestConsoleSummaryRoute(t *testing.T) {
 	}
 }
 
+func TestConsoleSummaryRouteReturnsArraysForEmptyData(t *testing.T) {
+	repo := &fakeRepo{emptyConsole: true}
+	server := httptest.NewServer(NewServer(repo).Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/console/summary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"watermarks", "task_runs", "data_quality_issue_counts", "quote_service_runs"} {
+		if string(payload[field]) != "[]" {
+			t.Fatalf("%s=%s", field, payload[field])
+		}
+	}
+}
+
+func TestConsoleQuoteRunsReturnArrayMarkets(t *testing.T) {
+	repo := &fakeRepo{nilQuoteRunMarkets: true}
+	server := httptest.NewServer(NewServer(repo).Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/console/quote-service/runs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var runs []ConsoleQuoteServiceRun
+	if err := json.NewDecoder(resp.Body).Decode(&runs); err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("runs=%+v", runs)
+	}
+	if runs[0].Markets == nil || len(runs[0].Markets) != 0 {
+		t.Fatalf("markets=%+v", runs[0].Markets)
+	}
+}
+
 func TestConsoleLimitValidation(t *testing.T) {
 	server := httptest.NewServer(NewServer(&fakeRepo{}).Handler())
 	defer server.Close()

@@ -54,10 +54,10 @@ func (s *Server) handleConsoleSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, ConsoleSummary{
 		Health:                 health,
-		Watermarks:             watermarks,
-		TaskRuns:               taskRuns,
-		DataQualityIssueCounts: issueStats,
-		QuoteServiceRuns:       quoteRuns,
+		Watermarks:             nonNilSlice(watermarks),
+		TaskRuns:               nonNilSlice(taskRuns),
+		DataQualityIssueCounts: nonNilSlice(issueStats),
+		QuoteServiceRuns:       nonNilQuoteServiceRuns(quoteRuns),
 	})
 }
 
@@ -68,7 +68,7 @@ func (s *Server) handleConsoleWatermarks(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	items, err := s.repo.ConsoleWatermarks(r.Context(), limit)
-	writeConsoleResult(w, items, err)
+	writeConsoleResult(w, nonNilSlice(items), err)
 }
 
 func (s *Server) handleConsoleTaskRuns(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +78,7 @@ func (s *Server) handleConsoleTaskRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := s.repo.ConsoleTaskRuns(r.Context(), limit)
-	writeConsoleResult(w, items, err)
+	writeConsoleResult(w, nonNilSlice(items), err)
 }
 
 func (s *Server) handleConsoleDataQualityIssues(w http.ResponseWriter, r *http.Request) {
@@ -88,7 +88,7 @@ func (s *Server) handleConsoleDataQualityIssues(w http.ResponseWriter, r *http.R
 		return
 	}
 	items, err := s.repo.ConsoleDataQualityIssues(r.Context(), limit)
-	writeConsoleResult(w, items, err)
+	writeConsoleResult(w, nonNilSlice(items), err)
 }
 
 func (s *Server) handleConsoleQuoteServiceRuns(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +98,7 @@ func (s *Server) handleConsoleQuoteServiceRuns(w http.ResponseWriter, r *http.Re
 		return
 	}
 	items, err := s.repo.ConsoleQuoteServiceRuns(r.Context(), limit)
-	writeConsoleResult(w, items, err)
+	writeConsoleResult(w, nonNilQuoteServiceRuns(items), err)
 }
 
 func (s *Server) handleConsoleTDXHQProbe(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +142,7 @@ func (s *Server) handleConsoleTDXHQQuotes(w http.ResponseWriter, r *http.Request
 		return
 	}
 	quotes, err := s.tdxProvider.FetchRealtimeQuotes(r.Context(), requests, opts)
-	writeConsoleResult(w, ConsoleQuoteSmokeResult{Quotes: quotes}, err)
+	writeConsoleResult(w, ConsoleQuoteSmokeResult{Quotes: nonNilSlice(quotes)}, err)
 }
 
 func (s *Server) handleConsoleBestIP(w http.ResponseWriter, r *http.Request) {
@@ -255,11 +255,23 @@ func bestIPStatusFromCache(cachePath string, cache tdx.HQBestIPCache) ConsoleBes
 	return status
 }
 
-func nonNilProbeResults(results []tdx.ServerProbeResult) []tdx.ServerProbeResult {
-	if results == nil {
-		return []tdx.ServerProbeResult{}
+func nonNilSlice[T any](items []T) []T {
+	if items == nil {
+		return []T{}
 	}
-	return results
+	return items
+}
+
+func nonNilQuoteServiceRuns(runs []ConsoleQuoteServiceRun) []ConsoleQuoteServiceRun {
+	runs = nonNilSlice(runs)
+	for i := range runs {
+		runs[i].Markets = nonNilSlice(runs[i].Markets)
+	}
+	return runs
+}
+
+func nonNilProbeResults(results []tdx.ServerProbeResult) []tdx.ServerProbeResult {
+	return nonNilSlice(results)
 }
 
 func writeConsoleResult(w http.ResponseWriter, value any, err error) {

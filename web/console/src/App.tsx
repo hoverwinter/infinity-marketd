@@ -1,4 +1,5 @@
-import { ReactNode, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -363,7 +364,7 @@ function QuoteRunTable({ rows }: { rows: QuoteServiceRun[] }) {
       rows={rows.map((row) => [
         shortID(row.run_id),
         statusPill(row.status),
-        row.markets.join(",") || "-",
+        (row.markets ?? []).join(",") || "-",
         `${row.succeeded_batches}/${row.planned_batches}`,
         row.rows_fetched.toLocaleString(),
         formatClock(row.started_at),
@@ -438,7 +439,7 @@ function Metric({ label, value, sub, icon: Icon }: { label: string; value: strin
   );
 }
 
-function LoadableTable<T>({ state, render }: { state: Loadable<T>; render: (data: T) => React.ReactNode }) {
+function LoadableTable<T>({ state, render }: { state: Loadable<T>; render: (data: T) => ReactNode }) {
   if (state.loading) return <Loading label="Loading data" />;
   if (state.error) return <ErrorState message={state.error} />;
   if (!state.data) return <EmptyState label="No data" />;

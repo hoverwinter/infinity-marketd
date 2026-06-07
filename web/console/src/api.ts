@@ -116,6 +116,15 @@ export type ConsoleSummary = {
   quote_service_runs: QuoteServiceRun[];
 };
 
+type WireQuoteServiceRun = Omit<QuoteServiceRun, "markets"> & { markets: string[] | null };
+type WireBestIPStatus = Omit<BestIPStatus, "results"> & { results: ProbeResult[] | null };
+type WireConsoleSummary = Omit<ConsoleSummary, "watermarks" | "task_runs" | "data_quality_issue_counts" | "quote_service_runs"> & {
+  watermarks: Watermark[] | null;
+  task_runs: TaskRun[] | null;
+  data_quality_issue_counts: QualityIssueStat[] | null;
+  quote_service_runs: WireQuoteServiceRun[] | null;
+};
+
 async function getJSON<T>(path: string): Promise<T> {
   const response = await fetch(path);
   return readJSON<T>(response);
@@ -142,27 +151,55 @@ async function readJSON<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
+function asArray<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeQuoteRun(run: WireQuoteServiceRun): QuoteServiceRun {
+  return { ...run, markets: asArray(run.markets) };
+}
+
+function normalizeSummary(summary: WireConsoleSummary): ConsoleSummary {
+  return {
+    ...summary,
+    watermarks: asArray(summary.watermarks),
+    task_runs: asArray(summary.task_runs),
+    data_quality_issue_counts: asArray(summary.data_quality_issue_counts),
+    quote_service_runs: asArray(summary.quote_service_runs).map(normalizeQuoteRun)
+  };
+}
+
+function normalizeBestIP(status: WireBestIPStatus): BestIPStatus {
+  return { ...status, results: asArray(status.results) };
+}
+
 export const api = {
-  summary: (limit = 20) => getJSON<ConsoleSummary>(`/api/console/summary?limit=${limit}`),
-  watermarks: (limit = 50) => getJSON<Watermark[]>(`/api/console/watermarks?limit=${limit}`),
-  taskRuns: (limit = 50) => getJSON<TaskRun[]>(`/api/console/task-runs?limit=${limit}`),
-  dataQualityIssues: (limit = 50) => getJSON<DataQualityIssue[]>(`/api/console/data-quality-issues?limit=${limit}`),
-  quoteRuns: (limit = 50) => getJSON<QuoteServiceRun[]>(`/api/console/quote-service/runs?limit=${limit}`),
-  bestip: () => getJSON<BestIPStatus>("/api/console/bestip"),
+  summary: (limit = 20) => getJSON<WireConsoleSummary>(`/api/console/summary?limit=${limit}`).then(normalizeSummary),
+  watermarks: (limit = 50) => getJSON<Watermark[] | null>(`/api/console/watermarks?limit=${limit}`).then(asArray),
+  taskRuns: (limit = 50) => getJSON<TaskRun[] | null>(`/api/console/task-runs?limit=${limit}`).then(asArray),
+  dataQualityIssues: (limit = 50) => getJSON<DataQualityIssue[] | null>(`/api/console/data-quality-issues?limit=${limit}`).then(asArray),
+  quoteRuns: (limit = 50) => getJSON<WireQuoteServiceRun[] | null>(`/api/console/quote-service/runs?limit=${limit}`).then((runs) => asArray(runs).map(normalizeQuoteRun)),
+  bestip: () => getJSON<WireBestIPStatus>("/api/console/bestip").then(normalizeBestIP),
   refreshBestip: (servers: string, maxAge: string) => {
     const params = new URLSearchParams();
     if (servers.trim()) params.set("server", servers);
     if (maxAge.trim()) params.set("max-age", maxAge);
-    return postJSON<BestIPStatus>(`/api/console/bestip/refresh?${params.toString()}`);
+    return postJSON<WireBestIPStatus>(`/api/console/bestip/refresh?${params.toString()}`).then(normalizeBestIP);
   },
   probe: (servers: string) => {
     const params = new URLSearchParams();
     if (servers.trim()) params.set("server", servers);
-    return getJSON<{ results: ProbeResult[] }>(`/api/console/tdx/hq/probe?${params.toString()}`);
+    return getJSON<{ results: ProbeResult[] | null }>(`/api/console/tdx/hq/probe?${params.toString()}`).then((payload) => ({
+      ...payload,
+      results: asArray(payload.results)
+    }));
   },
   quoteSmoke: (symbols: string) => {
     const params = new URLSearchParams();
     params.set("symbol", symbols);
-    return getJSON<{ quotes: Quote[] }>(`/api/console/tdx/hq/quotes?${params.toString()}`);
+    return getJSON<{ quotes: Quote[] | null }>(`/api/console/tdx/hq/quotes?${params.toString()}`).then((payload) => ({
+      ...payload,
+      quotes: asArray(payload.quotes)
+    }));
   }
 };
