@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/hoverwinter/infinity-marketd/internal/securitymaster"
 )
 
 type fakeRepo struct {
@@ -18,6 +20,31 @@ type fakeRepo struct {
 	limit              int
 	emptyConsole       bool
 	nilQuoteRunMarkets bool
+}
+
+type fakeSecuritiesRepo struct {
+	security     securitymaster.Security
+	candidates   []securitymaster.ResolveCandidate
+	securityErr  error
+	resolveErr   error
+	lookupCalls  int
+	resolveCalls int
+}
+
+func (r *fakeSecuritiesRepo) Security(context.Context, string, string) (securitymaster.Security, error) {
+	r.lookupCalls++
+	if r.securityErr != nil {
+		return securitymaster.Security{}, r.securityErr
+	}
+	return r.security, nil
+}
+
+func (r *fakeSecuritiesRepo) Resolve(context.Context, string, int) ([]securitymaster.ResolveCandidate, error) {
+	r.resolveCalls++
+	if r.resolveErr != nil {
+		return nil, r.resolveErr
+	}
+	return r.candidates, nil
 }
 
 func (r *fakeRepo) Health(context.Context) error {
@@ -327,6 +354,98 @@ func TestServerResolveSymbol(t *testing.T) {
 	}
 	if result.Market != "bj" || result.Symbol != "920002" {
 		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestServerSecurityLookup(t *testing.T) {
+	repo := &fakeRepo{}
+	secRepo := &fakeSecuritiesRepo{security: securitymaster.Security{
+		Market:      "sh",
+		Symbol:      "600519",
+		Exchange:    "SSE",
+		CurrentName: "贵州茅台",
+		Board:       "main",
+		Status:      securitymaster.StatusListed,
+		Source:      securitymaster.SourceTDX,
+	}}
+	server := httptest.NewServer(NewServerWithSecurities(repo, secRepo).Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/v1/securities?market=sh&symbol=600519")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var result securitymaster.Security
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.CurrentName != "贵州茅台" || secRepo.lookupCalls != 1 {
+		t.Fatalf("result=%+v calls=%d", result, secRepo.lookupCalls)
+	}
+}
+
+func TestServerSecurityLookupNotFound(t *testing.T) {
+	secRepo := &fakeSecuritiesRepo{securityErr: securitymaster.ErrNotFound}
+	server := httptest.NewServer(NewServerWithSecurities(&fakeRepo{}, secRepo).Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/v1/securities?market=sh&symbol=600520")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+}
+
+func TestServerSecurityResolvePreservesAmbiguity(t *testing.T) {
+	secRepo := &fakeSecuritiesRepo{candidates: []securitymaster.ResolveCandidate{
+		{Security: securitymaster.Security{Market: "sh", Symbol: "600001", CurrentName: "同名股份"}, MatchType: "current_name", MatchedText: "同名", Score: 90},
+		{Security: securitymaster.Security{Market: "sz", Symbol: "000001", CurrentName: "同名银行"}, MatchType: "alias", MatchedText: "同名", Score: 70},
+	}}
+	server := httptest.NewServer(NewServerWithSecurities(&fakeRepo{}, secRepo).Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/v1/securities/resolve?q=%E5%90%8C%E5%90%8D")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var result struct {
+		Q          string                            `json:"q"`
+		Candidates []securitymaster.ResolveCandidate `json:"candidates"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Candidates) != 2 || secRepo.resolveCalls != 1 {
+		t.Fatalf("result=%+v calls=%d", result, secRepo.resolveCalls)
+	}
+}
+
+func TestServerBarsDoesNotUseSecuritiesRepo(t *testing.T) {
+	secRepo := &fakeSecuritiesRepo{}
+	server := httptest.NewServer(NewServerWithSecurities(&fakeRepo{}, secRepo).Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/v1/bars?market=sh&symbol=600519&period=1d&limit=5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if secRepo.lookupCalls != 0 || secRepo.resolveCalls != 0 {
+		t.Fatalf("securities repo was called: lookup=%d resolve=%d", secRepo.lookupCalls, secRepo.resolveCalls)
 	}
 }
 

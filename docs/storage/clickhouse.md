@@ -26,6 +26,8 @@ infinity_ops     # marketd watermarks, task runs, and data quality issues
 
 不要使用 `infinity` 作为 marketd 的目标 database。`configs/config.yaml` 应指向 `infinity_market`。
 
+Mutable securities reference data does not live in ClickHouse. Current security names, aliases, historical names, listing status, and manual corrections are stored in MySQL; see [MySQL Securities Master](security-master-mysql.md). ClickHouse tables remain limited to行情 facts, derived market data, and ops records.
+
 ## Configuration
 
 当前配置文件格式：
@@ -37,6 +39,17 @@ clickhouse:
   port: 9000
   passwd: ""
   database: "infinity_market"
+
+mysql:
+  enabled: false
+  host: "127.0.0.1"
+  port: 3306
+  database: "infinity_market"
+  user: "marketd"
+  password: ""
+  max_open_conns: 5
+  max_idle_conns: 2
+  conn_max_lifetime: "5m"
 
 tdx:
   root: "data"
@@ -65,6 +78,7 @@ logging:
 Market fact tables are canonical facts:
 
 - No `source`, `source_key`, `source_file`, `version`, or `updated_at` columns.
+- No security names, aliases, listing status, or other mutable securities-master fields.
 - No cross-row derived metrics in fact tables.
 - `marketd` resolves duplicate or conflicting inputs before writing facts.
 - Re-imports write by the same logical key and rely on `ReplacingMergeTree` to merge physical duplicates.

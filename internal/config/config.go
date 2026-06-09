@@ -13,6 +13,7 @@ import (
 
 type Config struct {
 	ClickHouse   ClickHouseConfig   `yaml:"clickhouse"`
+	MySQL        MySQLConfig        `yaml:"mysql"`
 	TDX          TDXConfig          `yaml:"tdx"`
 	Runtime      RuntimeConfig      `yaml:"runtime"`
 	Logging      LoggingConfig      `yaml:"logging"`
@@ -65,6 +66,40 @@ type ClickHouseConfig struct {
 	Databases DatabaseConfig `yaml:"databases"`
 }
 
+type MySQLConfig struct {
+	Enabled         bool         `yaml:"enabled"`
+	Addr            string       `yaml:"addr"`
+	Host            string       `yaml:"host"`
+	Port            int          `yaml:"port"`
+	User            string       `yaml:"user"`
+	Password        string       `yaml:"password"`
+	Passwd          scalarString `yaml:"passwd"`
+	Database        string       `yaml:"database"`
+	MaxOpenConns    int          `yaml:"max_open_conns"`
+	MaxIdleConns    int          `yaml:"max_idle_conns"`
+	ConnMaxLifetime Duration     `yaml:"conn_max_lifetime"`
+}
+
+func (cfg MySQLConfig) Configured() bool {
+	return cfg.Enabled
+}
+
+func (cfg MySQLConfig) RequiredError() error {
+	if !cfg.Enabled {
+		return fmt.Errorf("mysql.enabled must be true for securities master")
+	}
+	if strings.TrimSpace(cfg.Addr) == "" {
+		return fmt.Errorf("mysql.addr is required for securities master")
+	}
+	if strings.TrimSpace(cfg.Database) == "" {
+		return fmt.Errorf("mysql.database is required for securities master")
+	}
+	if strings.TrimSpace(cfg.User) == "" {
+		return fmt.Errorf("mysql.user is required for securities master")
+	}
+	return nil
+}
+
 type DatabaseConfig struct {
 	Market string `yaml:"market"`
 	Ops    string `yaml:"ops"`
@@ -104,6 +139,13 @@ type Overrides struct {
 	ClickHouseOpsDB    string
 	ClickHouseUser     string
 	ClickHousePassword string
+	MySQLEnabled       string
+	MySQLAddr          string
+	MySQLHost          string
+	MySQLPort          int
+	MySQLDatabase      string
+	MySQLUser          string
+	MySQLPassword      string
 	TDXRoot            string
 	BatchSize          int
 	Timezone           string
@@ -127,6 +169,11 @@ func Default() Config {
 				Market: "infinity_market",
 				Ops:    "infinity_ops",
 			},
+		},
+		MySQL: MySQLConfig{
+			MaxOpenConns:    5,
+			MaxIdleConns:    2,
+			ConnMaxLifetime: Duration(5 * time.Minute),
 		},
 		Runtime: RuntimeConfig{
 			Timezone:  "Asia/Shanghai",
@@ -179,8 +226,16 @@ func Load(overrides Overrides) (Config, error) {
 		}
 	}
 	normalizeClickHouseConfig(&cfg.ClickHouse)
+	normalizeMySQLConfig(&cfg.MySQL)
 	applyEnv(&cfg)
+	normalizeMySQLConfig(&cfg.MySQL)
+	if overrides.MySQLEnabled != "" {
+		if _, err := strconv.ParseBool(overrides.MySQLEnabled); err != nil {
+			return cfg, fmt.Errorf("mysql-enabled must be a boolean")
+		}
+	}
 	applyOverrides(&cfg, overrides)
+	normalizeMySQLConfig(&cfg.MySQL)
 	if cfg.Runtime.BatchSize <= 0 {
 		return cfg, fmt.Errorf("runtime.batch_size must be positive")
 	}
@@ -188,6 +243,9 @@ func Load(overrides Overrides) (Config, error) {
 		return cfg, fmt.Errorf("clickhouse database names are required")
 	}
 	if err := validateLoggingConfig(cfg.Logging); err != nil {
+		return cfg, err
+	}
+	if err := validateMySQLConfig(cfg.MySQL); err != nil {
 		return cfg, err
 	}
 	if err := validateQuoteServiceConfig(cfg.QuoteService); err != nil {
@@ -219,6 +277,19 @@ func normalizeClickHouseConfig(cfg *ClickHouseConfig) {
 	}
 }
 
+func normalizeMySQLConfig(cfg *MySQLConfig) {
+	if cfg.Addr == "" && cfg.Host != "" {
+		port := cfg.Port
+		if port == 0 {
+			port = 3306
+		}
+		cfg.Addr = fmt.Sprintf("%s:%d", cfg.Host, port)
+	}
+	if cfg.Password == "" && cfg.Passwd != "" {
+		cfg.Password = string(cfg.Passwd)
+	}
+}
+
 func RegisterCommonFlags(fs *flag.FlagSet, overrides *Overrides) {
 	fs.StringVar(&overrides.ConfigPath, "config", "", "config file path")
 	fs.StringVar(&overrides.ClickHouseAddr, "clickhouse-addr", "", "ClickHouse native address host:port")
@@ -227,6 +298,13 @@ func RegisterCommonFlags(fs *flag.FlagSet, overrides *Overrides) {
 	fs.StringVar(&overrides.ClickHouseOpsDB, "clickhouse-ops-db", "", "ClickHouse ops database")
 	fs.StringVar(&overrides.ClickHouseUser, "clickhouse-user", "", "ClickHouse user")
 	fs.StringVar(&overrides.ClickHousePassword, "clickhouse-password", "", "ClickHouse password")
+	fs.StringVar(&overrides.MySQLEnabled, "mysql-enabled", "", "enable MySQL securities master: true or false")
+	fs.StringVar(&overrides.MySQLAddr, "mysql-addr", "", "MySQL address host:port")
+	fs.StringVar(&overrides.MySQLHost, "mysql-host", "", "MySQL host")
+	fs.IntVar(&overrides.MySQLPort, "mysql-port", 0, "MySQL port")
+	fs.StringVar(&overrides.MySQLDatabase, "mysql-database", "", "MySQL database for securities master")
+	fs.StringVar(&overrides.MySQLUser, "mysql-user", "", "MySQL user")
+	fs.StringVar(&overrides.MySQLPassword, "mysql-password", "", "MySQL password")
 	fs.StringVar(&overrides.TDXRoot, "root", "", "TDX root path")
 	fs.StringVar(&overrides.Timezone, "timezone", "", "runtime timezone")
 	fs.IntVar(&overrides.BatchSize, "batch-size", 0, "batch insert size")
@@ -246,6 +324,11 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.ClickHouse.Databases.Ops, "MARKETD_CLICKHOUSE_OPS_DB")
 	setString(&cfg.ClickHouse.User, "MARKETD_CLICKHOUSE_USER")
 	setString(&cfg.ClickHouse.Password, "MARKETD_CLICKHOUSE_PASSWORD")
+	setString(&cfg.MySQL.Addr, "MARKETD_MYSQL_ADDR")
+	setString(&cfg.MySQL.Host, "MARKETD_MYSQL_HOST")
+	setString(&cfg.MySQL.Database, "MARKETD_MYSQL_DATABASE")
+	setString(&cfg.MySQL.User, "MARKETD_MYSQL_USER")
+	setString(&cfg.MySQL.Password, "MARKETD_MYSQL_PASSWORD")
 	setString(&cfg.TDX.Root, "MARKETD_TDX_ROOT")
 	setString(&cfg.Runtime.Timezone, "MARKETD_TIMEZONE")
 	setString(&cfg.Logging.Level, "MARKETD_LOG_LEVEL")
@@ -256,6 +339,31 @@ func applyEnv(cfg *Config) {
 	if value := os.Getenv("MARKETD_BATCH_SIZE"); value != "" {
 		if n, err := strconv.Atoi(value); err == nil {
 			cfg.Runtime.BatchSize = n
+		}
+	}
+	if value := os.Getenv("MARKETD_MYSQL_ENABLED"); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			cfg.MySQL.Enabled = parsed
+		}
+	}
+	if value := os.Getenv("MARKETD_MYSQL_PORT"); value != "" {
+		if n, err := strconv.Atoi(value); err == nil {
+			cfg.MySQL.Port = n
+		}
+	}
+	if value := os.Getenv("MARKETD_MYSQL_MAX_OPEN_CONNS"); value != "" {
+		if n, err := strconv.Atoi(value); err == nil {
+			cfg.MySQL.MaxOpenConns = n
+		}
+	}
+	if value := os.Getenv("MARKETD_MYSQL_MAX_IDLE_CONNS"); value != "" {
+		if n, err := strconv.Atoi(value); err == nil {
+			cfg.MySQL.MaxIdleConns = n
+		}
+	}
+	if value := os.Getenv("MARKETD_MYSQL_CONN_MAX_LIFETIME"); value != "" {
+		if d, err := time.ParseDuration(value); err == nil {
+			cfg.MySQL.ConnMaxLifetime = Duration(d)
 		}
 	}
 	if value := os.Getenv("MARKETD_LOG_FILE_MAX_SIZE_MB"); value != "" {
@@ -295,6 +403,30 @@ func applyOverrides(cfg *Config, overrides Overrides) {
 	}
 	if overrides.ClickHousePassword != "" {
 		cfg.ClickHouse.Password = overrides.ClickHousePassword
+	}
+	if overrides.MySQLEnabled != "" {
+		enabled, err := strconv.ParseBool(overrides.MySQLEnabled)
+		if err == nil {
+			cfg.MySQL.Enabled = enabled
+		}
+	}
+	if overrides.MySQLAddr != "" {
+		cfg.MySQL.Addr = overrides.MySQLAddr
+	}
+	if overrides.MySQLHost != "" {
+		cfg.MySQL.Host = overrides.MySQLHost
+	}
+	if overrides.MySQLPort > 0 {
+		cfg.MySQL.Port = overrides.MySQLPort
+	}
+	if overrides.MySQLDatabase != "" {
+		cfg.MySQL.Database = overrides.MySQLDatabase
+	}
+	if overrides.MySQLUser != "" {
+		cfg.MySQL.User = overrides.MySQLUser
+	}
+	if overrides.MySQLPassword != "" {
+		cfg.MySQL.Password = overrides.MySQLPassword
 	}
 	if overrides.TDXRoot != "" {
 		cfg.TDX.Root = overrides.TDXRoot
@@ -386,6 +518,22 @@ func validateLoggingConfig(cfg LoggingConfig) error {
 	}
 	if cfg.File.MaxAgeDays < 0 {
 		return fmt.Errorf("logging.file.max_age_days must be non-negative")
+	}
+	return nil
+}
+
+func validateMySQLConfig(cfg MySQLConfig) error {
+	if cfg.MaxOpenConns <= 0 {
+		return fmt.Errorf("mysql.max_open_conns must be positive")
+	}
+	if cfg.MaxIdleConns < 0 {
+		return fmt.Errorf("mysql.max_idle_conns must be non-negative")
+	}
+	if cfg.MaxIdleConns > cfg.MaxOpenConns {
+		return fmt.Errorf("mysql.max_idle_conns must be <= mysql.max_open_conns")
+	}
+	if cfg.ConnMaxLifetime.Duration() < 0 {
+		return fmt.Errorf("mysql.conn_max_lifetime must be non-negative")
 	}
 	return nil
 }

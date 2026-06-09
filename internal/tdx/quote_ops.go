@@ -297,7 +297,7 @@ func validateQuoteResponseMatchesRequest(requests []QuoteRequest, quotes []Quote
 
 func FetchSecurityList(ctx context.Context, market string, opts QuoteClientOptions) ([]Security, error) {
 	market = strings.ToLower(strings.TrimSpace(market))
-	if market != "sh" && market != "sz" {
+	if market != "sh" && market != "sz" && market != "bj" {
 		return nil, fmt.Errorf("unsupported security-list market %q", market)
 	}
 	var attempts []string

@@ -8,23 +8,36 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hoverwinter/infinity-marketd/internal/securitymaster"
 	"github.com/hoverwinter/infinity-marketd/internal/tdx"
 )
 
 type Server struct {
-	repo        Repository
-	tdxProvider *TDXProvider
+	repo           Repository
+	securitiesRepo securitymaster.Reader
+	tdxProvider    *TDXProvider
 }
 
 func NewServer(repo Repository) *Server {
-	return NewServerWithTDXProvider(repo, DefaultTDXProvider())
+	return NewServerWithSecurities(repo, nil)
+}
+
+func NewServerWithSecurities(repo Repository, securitiesRepo securitymaster.Reader) *Server {
+	return NewServerWithSecuritiesAndTDXProvider(repo, securitiesRepo, DefaultTDXProvider())
 }
 
 func NewServerWithTDXProvider(repo Repository, provider *TDXProvider) *Server {
+	return NewServerWithSecuritiesAndTDXProvider(repo, nil, provider)
+}
+
+func NewServerWithSecuritiesAndTDXProvider(repo Repository, securitiesRepo securitymaster.Reader, provider *TDXProvider) *Server {
 	if provider == nil {
 		provider = DefaultTDXProvider()
 	}
-	return &Server{repo: repo, tdxProvider: provider}
+	if securitiesRepo == nil {
+		securitiesRepo = securitymaster.NewUnavailableReader(fmt.Errorf("mysql is not configured"))
+	}
+	return &Server{repo: repo, securitiesRepo: securitiesRepo, tdxProvider: provider}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -37,6 +50,8 @@ func (s *Server) HandlerWithConsoleDist(consoleDist string) http.Handler {
 	mux.HandleFunc("GET /api/v1/bars", s.handleBars)
 	mux.HandleFunc("GET /api/v1/intraday-points", s.handleIntradayPoints)
 	mux.HandleFunc("GET /api/v1/resolve-symbol", s.handleResolveSymbol)
+	mux.HandleFunc("GET /api/v1/securities", s.handleSecurity)
+	mux.HandleFunc("GET /api/v1/securities/resolve", s.handleSecurityResolve)
 	s.registerTDXRoutes(mux)
 	s.registerConsoleRoutes(mux)
 	if strings.TrimSpace(consoleDist) != "" {
@@ -82,6 +97,43 @@ func (s *Server) handleResolveSymbol(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, SymbolResolution{Symbol: symbol, Market: tdx.InferMarketFromCode(symbol)})
 }
 
+func (s *Server) handleSecurity(w http.ResponseWriter, r *http.Request) {
+	market := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("market")))
+	symbol := strings.TrimSpace(r.URL.Query().Get("symbol"))
+	if !marketPattern.MatchString(market) {
+		writeError(w, http.StatusBadRequest, validationError("market must be sh, sz, or bj"))
+		return
+	}
+	if !symbolPattern.MatchString(symbol) {
+		writeError(w, http.StatusBadRequest, validationError("symbol must be six digits"))
+		return
+	}
+	security, err := s.securitiesRepo.Security(r.Context(), market, symbol)
+	if err != nil {
+		writeError(w, securityStatusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, security)
+}
+
+func (s *Server) handleSecurityResolve(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeError(w, http.StatusBadRequest, validationError("q is required"))
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	candidates, err := s.securitiesRepo.Resolve(r.Context(), q, limit)
+	if err != nil {
+		writeError(w, securityStatusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"q":          q,
+		"candidates": candidates,
+	})
+}
+
 func intradayPointQueryFromRequest(r *http.Request) IntradayPointQuery {
 	values := r.URL.Query()
 	limit, _ := strconv.Atoi(values.Get("limit"))
@@ -125,6 +177,20 @@ func statusForError(err error) int {
 	}
 	if IsMissingAdjustmentFactorError(err) {
 		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
+}
+
+func securityStatusForError(err error) int {
+	if errors.Is(err, securitymaster.ErrNotFound) {
+		return http.StatusNotFound
+	}
+	var unavailable securitymaster.UnavailableError
+	if errors.As(err, &unavailable) {
+		return http.StatusServiceUnavailable
+	}
+	if IsValidationError(err) {
+		return http.StatusBadRequest
 	}
 	return http.StatusInternalServerError
 }

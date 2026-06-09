@@ -7,7 +7,7 @@ import (
 
 const (
 	Version       = "0.1.0"
-	SchemaVersion = "2026-06-07"
+	SchemaVersion = "2026-06-10"
 )
 
 type Health struct {

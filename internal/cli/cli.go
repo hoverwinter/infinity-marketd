@@ -22,6 +22,7 @@ import (
 	"github.com/hoverwinter/infinity-marketd/internal/ingest"
 	"github.com/hoverwinter/infinity-marketd/internal/logging"
 	"github.com/hoverwinter/infinity-marketd/internal/model"
+	"github.com/hoverwinter/infinity-marketd/internal/securitymaster"
 	"github.com/hoverwinter/infinity-marketd/internal/tdx"
 	"github.com/hoverwinter/infinity-marketd/internal/tdx/finance"
 )
@@ -42,6 +43,7 @@ var fetchHQXDXRInfo = tdx.FetchHQXDXRInfo
 var fetchHQFinanceInfo = tdx.FetchHQFinanceInfo
 var fetchHQBlockMeta = tdx.FetchHQBlockMeta
 var fetchHQBlockMembers = tdx.FetchHQBlockMembers
+var fetchHQSecurityList = tdx.FetchSecurityList
 var fetchExMarkets = tdx.FetchExMarkets
 var fetchExQuote = tdx.FetchExQuote
 var fetchExInstrumentCount = tdx.FetchExInstrumentCount
@@ -52,6 +54,9 @@ var fetchExHistoryMinuteTime = tdx.FetchExHistoryMinuteTime
 var fetchExTransactions = tdx.FetchExTransactions
 var fetchExHistoryTransactions = tdx.FetchExHistoryTransactions
 var fetchExHistoryBarsRange = tdx.FetchExHistoryBarsRange
+var openSecurityMasterStore = securitymaster.Open
+var bootstrapSecurityMaster = securitymaster.Bootstrap
+var refreshSecurityMaster = securitymaster.Refresh
 
 func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -125,6 +130,8 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runRefreshDailyDerived(ctx, args[1:], stdout, stderr)
 	case "refresh-minute-scan":
 		return runRefreshMinuteScan(ctx, args[1:], stdout, stderr)
+	case "refresh-security-master":
+		return runRefreshSecurityMaster(ctx, args[1:], stdout, stderr)
 	case "hq-finance":
 		return runHQFinance(ctx, args[1:], stdout, stderr)
 	case "hq-block-meta":
@@ -761,6 +768,86 @@ type refreshSummary struct {
 	RowsWritten   uint64
 	QualityIssues int
 	DryRun        bool
+}
+
+func runRefreshSecurityMaster(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
+	var markets listFlags
+	var servers listFlags
+	var sourceName string
+	var filePath string
+	var dryRun bool
+	fs := newFlagSet("refresh-security-master", stderr)
+	config.RegisterCommonFlags(fs, &overrides)
+	fs.StringVar(&sourceName, "source", securitymaster.SourceTDX, "security master source: tdx or file")
+	fs.Var(&markets, "market", "market to refresh; repeat or comma-separate, defaults to sh,sz,bj")
+	fs.Var(&servers, "server", "TDX HQ server host:port for --source tdx; repeat or comma-separate")
+	fs.StringVar(&filePath, "file", "", "normalized CSV file for --source file")
+	fs.BoolVar(&dryRun, "dry-run", false, "fetch and normalize without writing MySQL")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	sourceName = strings.ToLower(strings.TrimSpace(sourceName))
+	var source securitymaster.Source
+	switch sourceName {
+	case securitymaster.SourceTDX:
+		serverList, err := configuredHQServers([]string(servers), overrides)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		source = securitymaster.NewTDXSource(fetchHQSecurityList, hqClientOptions(serverList))
+	case securitymaster.SourceFile:
+		if strings.TrimSpace(filePath) == "" {
+			fmt.Fprintln(stderr, "--file is required for --source file")
+			return 2
+		}
+		source = securitymaster.FileSource{Path: filePath, Source: securitymaster.SourceFile}
+	default:
+		fmt.Fprintln(stderr, "--source must be tdx or file")
+		return 2
+	}
+	var store securitymaster.Writer
+	var closeStore func() error
+	if !dryRun {
+		cfg, err := config.Load(overrides)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if err := cfg.MySQL.RequiredError(); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		cleanup, ok := setupLogging(cfg, stderr)
+		if !ok {
+			return 1
+		}
+		defer cleanup()
+		securityStore, err := openSecurityMasterStore(ctx, cfg.MySQL)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		store = securityStore
+		closeStore = securityStore.Close
+		defer closeStore()
+	}
+	summary, err := refreshSecurityMaster(ctx, securitymaster.RefreshOptions{
+		SourceName: sourceName,
+		Markets:    []string(markets),
+		DryRun:     dryRun,
+		Source:     source,
+		Store:      store,
+	})
+	if err != nil {
+		if summary.Error != "" {
+			_ = writeJSON(stdout, stderr, summary)
+		}
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, summary)
 }
 
 func runRefreshTDXXDXR(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
@@ -1943,6 +2030,20 @@ func runBootstrap(ctx context.Context, args []string, stdout io.Writer, stderr i
 		for _, stmt := range ddl {
 			fmt.Fprintln(stdout, stmt+";")
 		}
+		if cfg.MySQL.Configured() {
+			if err := cfg.MySQL.RequiredError(); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			mysqlDDL, err := securitymaster.BootstrapDDL(cfg.MySQL.Database)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			for _, stmt := range mysqlDDL {
+				fmt.Fprintln(stdout, stmt+";")
+			}
+		}
 		return 0
 	}
 	store, err := chstore.Open(ctx, cfg.ClickHouse)
@@ -1954,6 +2055,12 @@ func runBootstrap(ctx context.Context, args []string, stdout io.Writer, stderr i
 	if err := store.Bootstrap(ctx); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+	if cfg.MySQL.Configured() {
+		if err := bootstrapSecurityMaster(ctx, cfg.MySQL); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
 	}
 	fmt.Fprintln(stdout, "bootstrap ok")
 	return 0
@@ -3238,6 +3345,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  refresh-adjust-factors")
 	fmt.Fprintln(out, "  refresh-daily-derived")
 	fmt.Fprintln(out, "  refresh-minute-scan")
+	fmt.Fprintln(out, "  refresh-security-master")
 	fmt.Fprintln(out, "  hq-finance")
 	fmt.Fprintln(out, "  hq-block-meta")
 	fmt.Fprintln(out, "  hq-block")

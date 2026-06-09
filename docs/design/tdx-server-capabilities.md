@@ -103,14 +103,15 @@ ClickHouse-backed /api/v1
 | --- | --- | --- |
 | `sz` | 已启用 | 实时 quote、证券数量/列表和各类 hq 读取请求可用 |
 | `sh` | 已启用 | 实时 quote、证券数量/列表和各类 hq 读取请求可用 |
-| `bj` | 部分启用 | 单只实时 quote 已实现并验证过 `920*`；证券数量/列表 discovery 未启用 |
+| `bj` | 已启用 | 单只实时 quote 已实现并验证过 `920*`；证券数量/列表 discovery 通过标准行情 market byte `2` 启用并由协议 fixture 覆盖，但可用性仍取决于所选 public server |
 
 `bj` 相关实现边界：
 
 - `920*`、`8*`、`4*` 代码会按本地规则推断为 `bj`。
 - 含 `bj` 的批量 quote 当前会保守拆成单只请求。
 - 如果 server 返回不匹配的 fallback 代码，客户端会用 response identity 校验拒绝该结果。
-- `quote-sweep --market bj` 不启用在线发现，直到取得可用且稳定的证券列表路径。
+- `quote-sweep --market bj` 使用标准行情证券数量/列表 discovery；如果所选 server 不支持该路径，会返回 source/upstream failure，不会 fallback 到其他来源。
+- `internal/tdx/quote_ops_test.go` 覆盖了 `bj` count/list packet path；2026-06-10 对 `180.153.18.170:7709` 和 `60.191.117.167:7709` 的 live 小样本请求返回 read timeout，因此线上可用性仍需按 server 观察。
 
 ## 扩展行情 exhq
 

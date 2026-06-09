@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -226,8 +227,22 @@ func TestDecodeSecurityListResponseToleratesMalformedName(t *testing.T) {
 	}
 }
 
-func TestFetchSecurityListRejectsBeijingDiscovery(t *testing.T) {
-	_, err := FetchSecurityList(context.Background(), "bj", QuoteClientOptions{})
+func TestFetchSecurityListSupportsBeijingDiscovery(t *testing.T) {
+	server := startScriptedHQServer(t, append(setupSteps(),
+		scriptStep{ReadLen: len(BuildSecurityCountPacket("bj")), Body: countBody(1)},
+		scriptStep{ReadLen: len(BuildSecurityListPacket("bj", 0)), Body: securityListBody([]securityRecord{{Code: "920001", Name: "BJTEST", VolUnit: 100, DecimalPoint: 2}})},
+	))
+	securities, err := FetchSecurityList(context.Background(), "bj", QuoteClientOptions{Server: server, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(securities) != 1 || securities[0].Market != "bj" || securities[0].Symbol != "920001" {
+		t.Fatalf("securities = %#v", securities)
+	}
+}
+
+func TestFetchSecurityListRejectsUnsupportedDiscoveryMarket(t *testing.T) {
+	_, err := FetchSecurityList(context.Background(), "hk", QuoteClientOptions{})
 	if err == nil || !strings.Contains(err.Error(), "unsupported security-list market") {
 		t.Fatalf("err = %v", err)
 	}
@@ -268,10 +283,26 @@ func TestQuoteSweepWithExplicitBeijingSymbolUsesBatchWorkflow(t *testing.T) {
 	}
 }
 
-func TestQuoteSweepRejectsBeijingDiscovery(t *testing.T) {
-	_, err := QuoteSweep(context.Background(), QuoteSweepOptions{Markets: []string{"bj"}})
-	if err == nil || !strings.Contains(err.Error(), "unsupported security-list market") {
-		t.Fatalf("err = %v", err)
+func TestQuoteSweepSupportsBeijingDiscovery(t *testing.T) {
+	request := QuoteRequest{Market: "bj", Symbol: "920001"}
+	server := startScriptedHQServerConnections(t, [][]scriptStep{
+		append(setupSteps(),
+			scriptStep{ReadLen: len(BuildSecurityCountPacket("bj")), Body: countBody(1)},
+			scriptStep{ReadLen: len(BuildSecurityListPacket("bj", 0)), Body: securityListBody([]securityRecord{{Code: "920001", Name: "BJTEST", VolUnit: 100, DecimalPoint: 2}})},
+		),
+		append(setupSteps(),
+			scriptStep{ReadLen: len(BuildQuoteRequestPacket([]QuoteRequest{request})), Body: quoteResponseBodyFor(tdxMarketBJ, "920001")},
+		),
+	})
+	quotes, err := QuoteSweep(context.Background(), QuoteSweepOptions{
+		Markets: []string{"bj"},
+		Client:  QuoteClientOptions{Server: server, Timeout: time.Second},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quotes) != 1 || quotes[0].Market != "bj" || quotes[0].Symbol != "920001" {
+		t.Fatalf("quotes = %#v", quotes)
 	}
 }
 
@@ -339,6 +370,45 @@ func startScriptedHQServer(t *testing.T, steps []scriptStep) string {
 			if err != nil {
 				return
 			}
+			go func() {
+				defer conn.Close()
+				for _, step := range steps {
+					packet := make([]byte, step.ReadLen)
+					if _, err := io.ReadFull(conn, packet); err != nil {
+						return
+					}
+					if _, err := conn.Write(tdxResponse(step.Body)); err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func startScriptedHQServerConnections(t *testing.T, scripts [][]scriptStep) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	var mu sync.Mutex
+	next := 0
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			if next >= len(scripts) {
+				next = len(scripts) - 1
+			}
+			steps := scripts[next]
+			next++
+			mu.Unlock()
 			go func() {
 				defer conn.Close()
 				for _, step := range steps {

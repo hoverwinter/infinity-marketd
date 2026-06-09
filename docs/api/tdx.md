@@ -146,12 +146,12 @@ Response:
 
 ### GET /api/tdx/hq/securities
 
-读取标准行情市场证券列表。
+读取标准行情市场证券列表，支持已验证的 `sh` / `sz` / `bj` 标准行情 market byte。
 
 Request:
 
 ```http
-GET /api/tdx/hq/securities?market=sh
+GET /api/tdx/hq/securities?market=bj
 ```
 
 Response:
@@ -159,12 +159,12 @@ Response:
 ```json
 [
   {
-    "market": "sh",
-    "symbol": "600519",
-    "name": "贵州茅台",
+    "market": "bj",
+    "symbol": "920001",
+    "name": "北证测试",
     "volunit": 100,
     "decimal_point": 2,
-    "pre_close": 1270.0
+    "pre_close": 10.0
   }
 ]
 ```

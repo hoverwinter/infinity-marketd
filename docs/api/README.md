@@ -32,7 +32,7 @@ Content-Type: application/json
 
 ## API Namespace Model
 
-`/api/v1/...` 是产品级查询 API，当前主要面向 ClickHouse-backed canonical market data。调用方可以把这些接口视为稳定、可重复读取的查询面。
+`/api/v1/...` 是产品级查询 API，面向 ClickHouse-backed canonical market data 和 MySQL-backed mutable reference data。调用方可以把这些接口视为稳定、可重复读取的查询面。
 
 TDX 在线协议能力不放在 `/api/v1` 下。后续 TDX provider/protocol API 设计为：
 
@@ -45,7 +45,7 @@ TDX 在线协议能力不放在 `/api/v1` 下。后续 TDX provider/protocol API
 
 | Namespace | Owner | Data source | Contract |
 | --- | --- | --- | --- |
-| `/api/v1/...` | querier product/query API | ClickHouse 或稳定内部状态 | 稳定查询、可重复读取、不发起 live TDX 请求 |
+| `/api/v1/...` | querier product/query API | ClickHouse facts、MySQL securities master 或稳定内部状态 | 稳定查询、可重复读取、不发起 live TDX 请求 |
 | `/api/tdx/hq/...` | TDX standard行情 provider API | live TDX HQ upstream | 请求/响应式在线读取，可能超时或受上游影响 |
 | `/api/tdx/exhq/...` | TDX extended行情 provider API | live TDX ExHQ upstream | 扩展市场协议读取，使用 numeric market id 和 instrument code |
 
@@ -151,7 +151,7 @@ GET /api/v1/health
 {
   "status": "ok",
   "version": "0.1.0",
-  "schema_version": "2026-06-06"
+  "schema_version": "2026-06-10"
 }
 ```
 
@@ -170,6 +170,90 @@ HTTP/1.1 503 Service Unavailable
   "error": "clickhouse: connection refused"
 }
 ```
+
+## GET /api/v1/securities
+
+查询单只证券当前主数据。该接口读取 MySQL securities master。
+
+### Request
+
+```http
+GET /api/v1/securities?market=sh&symbol=600519
+```
+
+### Query Parameters
+
+| Name | Required | Description |
+| --- | --- | --- |
+| `market` | yes | 市场，取值 `sh` / `sz` / `bj` |
+| `symbol` | yes | 6 位证券代码，例如 `600519` |
+
+### Response
+
+```json
+{
+  "market": "sh",
+  "symbol": "600519",
+  "exchange": "SSE",
+  "current_name": "贵州茅台",
+  "current_name_norm": "贵州茅台",
+  "board": "main",
+  "status": "listed",
+  "listing_date": "2001-08-27",
+  "lot_size": 100,
+  "price_precision": 2,
+  "source": "tdx",
+  "manual_locked": false
+}
+```
+
+### Failure
+
+不存在时返回 `404 Not Found`。MySQL 未配置或不可用时返回 `503 Service Unavailable`。
+
+## GET /api/v1/securities/resolve
+
+按代码、当前名称、历史名称或 alias 搜索证券主数据。该接口只返回候选，不替调用方解决同名歧义。
+
+### Request
+
+```http
+GET /api/v1/securities/resolve?q=贵州茅台
+```
+
+### Query Parameters
+
+| Name | Required | Description |
+| --- | --- | --- |
+| `q` | yes | 查询文本，可以是 6 位代码、当前名称、历史名称或 alias |
+| `limit` | no | 最大候选数，默认 `20`，最大 `100` |
+
+### Response
+
+```json
+{
+  "q": "贵州茅台",
+  "candidates": [
+    {
+      "security": {
+        "market": "sh",
+        "symbol": "600519",
+        "exchange": "SSE",
+        "current_name": "贵州茅台",
+        "board": "main",
+        "status": "listed",
+        "source": "tdx",
+        "manual_locked": false
+      },
+      "match_type": "current_name",
+      "matched_text": "贵州茅台",
+      "score": 90
+    }
+  ]
+}
+```
+
+如果同名或 alias 匹配多个证券，响应会保留多个候选；业务层自行选择或提示用户确认。
 
 ## GET /api/v1/bars
 
@@ -217,6 +301,8 @@ adjusted_close = raw_close * factor
 分钟 K 使用同一 `trade_date` 的日级因子。`volume` 和 `amount` 保持原始值，不随复权因子缩放。复权价格是分析价格，不是交易所真实成交价。
 
 `/api/v1/bars` 不会在请求路径里连接 live TDX server。使用复权查询前，operator 需要先刷新：
+
+`/api/v1/bars` 也不会查询 MySQL securities master，不返回 joined security name。需要名称或 alias 时，调用方应单独请求 `/api/v1/securities` 或 `/api/v1/securities/resolve`。
 
 ```bash
 marketd refresh-tdx-xdxr --market sh --symbol 600519

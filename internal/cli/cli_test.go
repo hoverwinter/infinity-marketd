@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hoverwinter/infinity-marketd/internal/securitymaster"
 	"github.com/hoverwinter/infinity-marketd/internal/tdx"
 )
 
@@ -52,6 +53,35 @@ func TestImportDryRunCommands(t *testing.T) {
 		}
 		if strings.Contains(out.String(), "_scan") {
 			t.Fatalf("%v import output unexpectedly references scan table:\n%s", tt.args, out.String())
+		}
+	}
+}
+
+func TestBootstrapDryRunIncludesMySQLDDLWhenEnabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, path, []byte(`clickhouse:
+  databases:
+    market: "infinity_market"
+    ops: "infinity_ops"
+mysql:
+  enabled: true
+  addr: "127.0.0.1:3306"
+  user: "marketd"
+  database: "infinity_market"
+`))
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"bootstrap", "--config", path, "--dry-run"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_bars_1d",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.securities",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.security_refresh_runs",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q\n%s", want, out.String())
 		}
 	}
 }
@@ -639,6 +669,90 @@ func TestQuoteSweepCommandAcceptsExplicitBeijingSymbols(t *testing.T) {
 	}
 	if len(decoded) != 1 || decoded[0].Market != "bj" {
 		t.Fatalf("decoded = %#v", decoded)
+	}
+}
+
+func TestRefreshSecurityMasterTDXDryRunUsesSelectedMarkets(t *testing.T) {
+	original := fetchHQSecurityList
+	defer func() { fetchHQSecurityList = original }()
+
+	var gotMarkets []string
+	fetchHQSecurityList = func(ctx context.Context, market string, opts tdx.QuoteClientOptions) ([]tdx.Security, error) {
+		gotMarkets = append(gotMarkets, market)
+		if strings.Join(opts.Servers, ",") != "127.0.0.1:7709" {
+			t.Fatalf("servers = %#v", opts.Servers)
+		}
+		return []tdx.Security{{Market: market, Symbol: "920001", Name: "北证测试", VolUnit: 100, DecimalPoint: 2}}, nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"refresh-security-master", "--source", "tdx", "--market", "bj", "--server", "127.0.0.1:7709", "--dry-run"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if strings.Join(gotMarkets, ",") != "bj" {
+		t.Fatalf("markets = %#v", gotMarkets)
+	}
+	var summary securitymaster.RefreshSummary
+	if err := json.Unmarshal(out.Bytes(), &summary); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if summary.Status != securitymaster.RefreshStatusDryRun || summary.RowsSeen != 1 || summary.RowsUpserted != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+}
+
+func TestRefreshSecurityMasterFileDryRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "securities.csv")
+	writeFile(t, path, []byte("market,symbol,current_name,status,listing_date,aliases\nbj,920001,北证测试,listed,20260610,BJTEST\n"))
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"refresh-security-master", "--source", "file", "--market", "bj", "--file", path, "--dry-run"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	var summary securitymaster.RefreshSummary
+	if err := json.Unmarshal(out.Bytes(), &summary); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if summary.Source != securitymaster.SourceFile || summary.RowsSeen != 1 || summary.AliasesUpserted != 2 || summary.HistoryUpserted != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+}
+
+func TestRefreshSecurityMasterRejectsMissingMySQLForWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "securities.csv")
+	writeFile(t, path, []byte("market,symbol,current_name\nbj,920001,北证测试\n"))
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"refresh-security-master", "--source", "file", "--market", "bj", "--file", path}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if !strings.Contains(errOut.String(), "mysql.enabled") {
+		t.Fatalf("stderr = %s", errOut.String())
+	}
+}
+
+func TestRefreshSecurityMasterSelectedSourceFailureDoesNotFallback(t *testing.T) {
+	original := fetchHQSecurityList
+	defer func() { fetchHQSecurityList = original }()
+
+	fetchHQSecurityList = func(ctx context.Context, market string, opts tdx.QuoteClientOptions) ([]tdx.Security, error) {
+		return nil, fmt.Errorf("tdx failed for %s", market)
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"refresh-security-master", "--source", "tdx", "--market", "bj", "--server", "127.0.0.1:7709", "--dry-run"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	if !strings.Contains(errOut.String(), "tdx failed for bj") {
+		t.Fatalf("stderr = %s", errOut.String())
 	}
 }
 

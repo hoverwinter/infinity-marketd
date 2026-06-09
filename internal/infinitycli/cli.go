@@ -14,6 +14,7 @@ import (
 	"github.com/hoverwinter/infinity-marketd/internal/config"
 	"github.com/hoverwinter/infinity-marketd/internal/logging"
 	"github.com/hoverwinter/infinity-marketd/internal/querier"
+	"github.com/hoverwinter/infinity-marketd/internal/securitymaster"
 	"go.uber.org/zap"
 )
 
@@ -88,7 +89,24 @@ func runQuerierServe(ctx context.Context, args []string, stdout io.Writer, stder
 		return 1
 	}
 	defer store.Close()
-	server := querier.NewServer(store)
+	var securitiesRepo securitymaster.Reader
+	var closeSecurities func() error
+	if cfg.MySQL.Configured() {
+		securitiesStore, err := securitymaster.Open(ctx, cfg.MySQL)
+		if err != nil {
+			zap.L().Warn("securities master unavailable", zap.Error(err))
+			securitiesRepo = securitymaster.NewUnavailableReader(err)
+		} else {
+			securitiesRepo = securitiesStore
+			closeSecurities = securitiesStore.Close
+		}
+	} else {
+		securitiesRepo = securitymaster.NewUnavailableReader(fmt.Errorf("mysql is not configured"))
+	}
+	if closeSecurities != nil {
+		defer closeSecurities()
+	}
+	server := querier.NewServerWithSecurities(store, securitiesRepo)
 	httpServer := &http.Server{
 		Addr:              listen,
 		Handler:           server.HandlerWithConsoleDist(consoleDist),

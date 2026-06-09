@@ -32,6 +32,15 @@ func TestLoadConfigFile(t *testing.T) {
   databases:
     market: "infinity_market"
     ops: "infinity_ops"
+mysql:
+  enabled: true
+  addr: "192.168.28.210:3306"
+  user: "marketd"
+  password: "mysql-secret"
+  database: "infinity_market"
+  max_open_conns: 8
+  max_idle_conns: 3
+  conn_max_lifetime: "10m"
 tdx:
   root: "/tmp/tdx"
   hq_servers: ["hq1:7709", "hq2:7709"]
@@ -64,6 +73,12 @@ logging:
 	}
 	if cfg.ClickHouse.User != "marketd" {
 		t.Fatalf("user = %q", cfg.ClickHouse.User)
+	}
+	if !cfg.MySQL.Enabled || cfg.MySQL.Addr != "192.168.28.210:3306" || cfg.MySQL.User != "marketd" || cfg.MySQL.Database != "infinity_market" {
+		t.Fatalf("mysql = %+v", cfg.MySQL)
+	}
+	if cfg.MySQL.MaxOpenConns != 8 || cfg.MySQL.MaxIdleConns != 3 || cfg.MySQL.ConnMaxLifetime.Duration().String() != "10m0s" {
+		t.Fatalf("mysql pool = %+v", cfg.MySQL)
 	}
 	if cfg.TDX.Root != "/tmp/tdx" {
 		t.Fatalf("tdx root = %q", cfg.TDX.Root)
@@ -125,6 +140,81 @@ func TestLoadClickHouseHostPortPasswdDatabaseConfig(t *testing.T) {
 	}
 	if cfg.ClickHouse.Databases.Ops != "infinity_ops" {
 		t.Fatalf("ops db = %q", cfg.ClickHouse.Databases.Ops)
+	}
+}
+
+func TestLoadMySQLHostPortPasswdDatabaseConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := []byte(`mysql:
+  enabled: true
+  user: "marketd"
+  host: "192.168.28.210"
+  port: 3306
+  passwd: 123456
+  database: "infinity_market"
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(Overrides{ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MySQL.Addr != "192.168.28.210:3306" {
+		t.Fatalf("addr = %q", cfg.MySQL.Addr)
+	}
+	if cfg.MySQL.Password != "123456" {
+		t.Fatalf("password = %q", cfg.MySQL.Password)
+	}
+	if err := cfg.MySQL.RequiredError(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadMySQLEnvAndOverridePrecedence(t *testing.T) {
+	t.Setenv("MARKETD_MYSQL_ENABLED", "true")
+	t.Setenv("MARKETD_MYSQL_ADDR", "env:3306")
+	t.Setenv("MARKETD_MYSQL_DATABASE", "env_db")
+	t.Setenv("MARKETD_MYSQL_USER", "env_user")
+
+	cfg, err := Load(Overrides{MySQLAddr: "flag:3306", MySQLUser: "flag_user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MySQL.Addr != "flag:3306" || cfg.MySQL.User != "flag_user" {
+		t.Fatalf("mysql = %+v", cfg.MySQL)
+	}
+	if cfg.MySQL.Database != "env_db" || !cfg.MySQL.Enabled {
+		t.Fatalf("mysql env = %+v", cfg.MySQL)
+	}
+}
+
+func TestMySQLRequiredErrorOnlyAppliesWhenUsed(t *testing.T) {
+	cfg, err := Load(Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MySQL.Configured() {
+		t.Fatalf("mysql unexpectedly configured: %+v", cfg.MySQL)
+	}
+	if err := cfg.MySQL.RequiredError(); err == nil || !strings.Contains(err.Error(), "mysql.enabled") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLoadRejectsInvalidMySQLPoolConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := []byte(`mysql:
+  max_open_conns: 1
+  max_idle_conns: 2
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(Overrides{ConfigPath: path})
+	if err == nil || !strings.Contains(err.Error(), "mysql.max_idle_conns") {
+		t.Fatalf("err = %v", err)
 	}
 }
 
