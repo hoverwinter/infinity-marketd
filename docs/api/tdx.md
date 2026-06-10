@@ -146,7 +146,9 @@ Response:
 
 ### GET /api/tdx/hq/securities
 
-读取标准行情市场证券列表，支持已验证的 `sh` / `sz` / `bj` 标准行情 market byte。
+读取标准行情市场证券列表。
+
+`sh` / `sz` 使用标准 HQ `0x044E` + `0x0450` 证券数量/列表。`bj` 使用兼容路径：HQ `0x054B category=12` 枚举北证 A 股代码，再用内置 MAC HQ server 的 `0x122B` 批量读取当前名称。该 endpoint 是 live provider read，不写 MySQL 或 ClickHouse。
 
 Request:
 

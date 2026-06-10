@@ -36,14 +36,15 @@ TDX server 指通达信客户端协议使用的行情服务器。通达信客户
 
 ## Server 类型
 
-TDX 生态中至少有两类常用行情服务器：
+TDX 生态中至少有三类常用行情服务器：
 
 | 类型 | 常见端口 | 上游主要覆盖 | 标识体系 |
 | --- | ---: | --- | --- |
 | 标准行情 `hq` | `7709` | A 股、指数、证券列表、K 线、分时、分笔、F10、除权除息、财务摘要、板块文件等 | `sh` / `sz` / `bj` 对应 market byte |
+| MAC HQ | `7709` | MAC/新版行情请求，如批量 symbol quote、板块成员、文件服务等 | market byte + fixed-width code |
 | 扩展行情 `exhq` | `7727` / `7720` | 期货、期权、港股、外盘等扩展市场，具体覆盖取决于 server | numeric market id + instrument code |
 
-`hq` 与 `exhq` 使用不同 server、market 标识和响应解析路径。两者不能共享 A 股市场映射。
+`hq`、MAC HQ 与 `exhq` 使用不同请求帧、market 标识和响应解析路径，不能混成一个抽象 client。MAC HQ 常见节点包括 `121.36.248.138:7709`、`123.60.47.136:7709`、`121.37.207.165:7709`。
 
 ## 标准行情 hq
 
@@ -85,7 +86,8 @@ TDX 生态中至少有两类常用行情服务器：
 
 - `920*`、`8*`、`4*` 通常可按本地规则推断为北交所。
 - 部分标准行情 server 可以返回北交所单只 quote。
-- `market byte 2` 的证券数量/列表在 public server 上不一定可用。
+- `market byte 2` 的 legacy 证券数量/列表在 public server 上不一定可用。
+- BJ securities master/provider list 使用 `0x054B category=12` 枚举北证 A 股代码，再用 MAC HQ `0x122B` 批量读取名称。
 - 如果 server 对未知市场做 fallback，客户端必须校验响应中的代码和市场身份。
 
 ### K 线分页语义

@@ -20,6 +20,18 @@ mysql:
 
 Environment overrides use `MARKETD_MYSQL_*`, for example `MARKETD_MYSQL_ENABLED`, `MARKETD_MYSQL_ADDR`, `MARKETD_MYSQL_DATABASE`, `MARKETD_MYSQL_USER`, and `MARKETD_MYSQL_PASSWORD`.
 
+TDX native refresh can also use MAC HQ servers for Beijing Stock Exchange names:
+
+```yaml
+tdx:
+  hq_servers:
+    - "180.153.18.170:7709"
+  mac_hq_servers:
+    - "121.36.248.138:7709"
+    - "123.60.47.136:7709"
+    - "121.37.207.165:7709"
+```
+
 ## Tables
 
 `securities` stores current metadata keyed by `(market, symbol)`: exchange, current name, normalized name, board, status, listing/delisting dates, lot size, price precision, source, manual lock state, and timestamps.
@@ -40,8 +52,20 @@ Native TDX refresh:
 go run ./cmd/marketd refresh-security-master \
   --source tdx \
   --market sh,sz,bj \
-  --server 180.153.18.170:7709
+  --server 180.153.18.170:7709 \
+  --mac-server 121.36.248.138:7709
 ```
+
+`sh` and `sz` use the standard HQ security count/list path (`0x044E` + `0x0450`).
+
+`bj` uses a compatibility path because public standard HQ servers commonly time out on legacy market byte `2` security list reads:
+
+1. `0x054B` quotes list with `category=12`, `sort=code`, and page size `80` enumerates BJ codes.
+2. Rows are filtered to `market_code=2`; pagination stops when the returned page is shorter than `80` because overrun pages can contain non-BJ rows.
+3. MAC HQ `0x122B` batch symbol quotes fetch current names for those codes.
+4. The resulting rows are normalized into the same MySQL tables as `sh` and `sz`.
+
+This two-step TDX read happens only inside explicit refresh/provider commands. `/api/v1/bars` does not join MySQL names and does not trigger live TDX reads.
 
 Normalized CSV refresh:
 

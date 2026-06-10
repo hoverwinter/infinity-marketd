@@ -63,7 +63,7 @@ ClickHouse-backed /api/v1
 | server 探测 | 已实现读取 | `quote-probe` | 不持久化 |
 | 多 server fallback | 已实现读取 | 多数 `hq` / `quote` 命令的 `--server` | 不持久化 |
 | 证券数量 | 已实现读取 | `quote-sweep --market` 内部使用 | 不持久化 |
-| 证券列表 | 已实现读取 | `quote-sweep --market` 内部使用 | 不持久化 |
+| 证券列表 | 已实现读取 | `quote-sweep --market` 内部使用；`bj` securities master/provider 使用兼容路径 | 不持久化 |
 | 实时行情快照 | 已实现读取 | `quote` / `quote-sweep` | 不持久化 |
 | 股票 K 线 | 已实现读取 | `hq-bars` | 不持久化 |
 | 指数 K 线 | 已实现读取 | `hq-index-bars` | 不持久化 |
@@ -103,15 +103,17 @@ ClickHouse-backed /api/v1
 | --- | --- | --- |
 | `sz` | 已启用 | 实时 quote、证券数量/列表和各类 hq 读取请求可用 |
 | `sh` | 已启用 | 实时 quote、证券数量/列表和各类 hq 读取请求可用 |
-| `bj` | 已启用 | 单只实时 quote 已实现并验证过 `920*`；证券数量/列表 discovery 通过标准行情 market byte `2` 启用并由协议 fixture 覆盖，但可用性仍取决于所选 public server |
+| `bj` | 已启用 | 单只实时 quote 已验证；securities master 和 `/api/tdx/hq/securities` 使用 `0x054B category=12` + MAC `0x122B` 获取带名称列表 |
 
 `bj` 相关实现边界：
 
 - `920*`、`8*`、`4*` 代码会按本地规则推断为 `bj`。
 - 含 `bj` 的批量 quote 当前会保守拆成单只请求。
 - 如果 server 返回不匹配的 fallback 代码，客户端会用 response identity 校验拒绝该结果。
-- `quote-sweep --market bj` 使用标准行情证券数量/列表 discovery；如果所选 server 不支持该路径，会返回 source/upstream failure，不会 fallback 到其他来源。
-- `internal/tdx/quote_ops_test.go` 覆盖了 `bj` count/list packet path；2026-06-10 对 `180.153.18.170:7709` 和 `60.191.117.167:7709` 的 live 小样本请求返回 read timeout，因此线上可用性仍需按 server 观察。
+- 标准行情 `market byte=2` 的 `0x0450` 证券列表在 public server 上不可靠；2026-06-10 对 `180.153.18.170:7709` 和 `60.191.117.167:7709` 的 live 小样本请求返回 read timeout。
+- `refresh-security-master --source tdx --market bj` 和 `/api/tdx/hq/securities?market=bj` 不再依赖 `0x0450`。实现先用 `0x054B category=12` 按代码分页枚举 BJ rows，再用 MAC HQ `0x122B` 批量读取 `name`。
+- `0x054B category=12` 翻页按 80 条一页处理，返回不足 80 条即停止，并且二次过滤 `market_code=2`；越界继续翻页可能返回非 BJ rows。
+- `quote-sweep --market bj` 仍使用旧的标准行情证券数量/列表 discovery；如果所选 server 不支持该路径，会返回 source/upstream failure。显式传入 `--symbol bj:920001` 不受该 discovery 限制。
 
 ## 扩展行情 exhq
 
@@ -158,6 +160,7 @@ ClickHouse-backed /api/v1
 - 在线 `quote` / `hq-*` / `exquote-*` 命令返回 JSON 或内部结构。
 - `/api/tdx/*` endpoint 返回 live upstream response。
 - 这些命令和 endpoint 不写入 ClickHouse。
+- `refresh-security-master` 是显式 MySQL reference-data refresh，不写 ClickHouse fact tables；BJ 支持里的两段 TDX 读取只服务于 MySQL securities master/current name。
 - 现有 canonical fact tables 仍以本地 TDX 文件导入的 `.day`、`.lc1`、`.1`、`.lc5`、`.5` 为主。
 - `client-local` 参考数据由独立 import 命令写入，例如 `import-tdx-gbbq`、`import-tdx-block`、`import-tdx-ex-daily`；这些命令读取本机 TDX 客户端文件，不连接 TDX server。
 - 在线 `hq-xdxr` 可用于校验 `gbbq`，在线 `hq-block` 可用于校验系统板块，在线 `exquote-bars` 可用于校验扩展行情日线，但这些 provider reads 不会隐式写入 client-local reference tables。
@@ -187,6 +190,9 @@ TDX public server 行为不稳定，因此实现需要保持保守：
 
 - `internal/tdx/quote.go`：标准行情实时 quote 请求包、响应解析、价格和成交额解码。
 - `internal/tdx/quote_ops.go`：标准行情 server 探测、候选 server fallback、批量会话复用、证券数量/列表和扫盘 workflow。
+- `internal/tdx/hq_advanced.go`：排序行情列表 `0x054B`，BJ 代码枚举复用该实现。
+- `internal/tdx/mac_quote.go`：MAC HQ `0x122B` 批量 symbol quote，解码 `market` / `symbol` / `name`。
+- `internal/tdx/security_list_compat.go`：`FetchSecurityListWithNames`，`bj` 使用 `0x054B category=12` + MAC `0x122B`，`sh` / `sz` 保持旧 `0x044E` + `0x0450`。
 - `internal/tdx/hq_data.go`：标准行情 K 线、分时、分笔、F10、除权除息、财务摘要和板块读取。
 - `internal/tdx/exquote.go`：扩展行情 session、market list 和单品种 quote。
 - `internal/tdx/exquote_data.go`：扩展行情品种列表、K 线、分时、分笔和历史读取。

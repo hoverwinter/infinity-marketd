@@ -32,9 +32,10 @@ Helper: `buildHQDirectFrame(msgID, frameType, body)` in `internal/tdx/hq_advance
 |-----|---------|-------------------|
 | 0x054B | quotes list (sorted scanner) | ✅ `hq_advanced.go` |
 | 0x053F | top board (9 ranking groups) | ✅ `hq_advanced.go` |
-| 0x122C | SP/MAC board members | ⏳ pending |
-| F10 0x02CF/0x02D0 | LHB (parsed from company content) | ⏳ pending |
-| 7727 fund | fund kline / fund detail | ⏳ pending |
+| 0x122B | MAC batch symbol quotes | ✅ `mac_quote.go` |
+| 0x122C | SP/MAC board members | ✅ `sp_client.go` |
+| F10 0x02CF/0x02D0 | LHB (parsed from company content) | ✅ `hq_lhb.go` |
+| 7727 fund | fund kline / fund detail | ✅ `fund_client.go` |
 
 ## 0x054B quotes list
 
@@ -43,11 +44,39 @@ sortReverse, `5`, excludeMask, `1`, `0`. sortReverse: code-sort→0, else
 desc→1 / asc→2. excludeMask bits exclude stock types (FilterBJ returns empty
 from server).
 
+BJ securities master/provider uses `category=12` (`北证A`) with `sortType=0`
+code sort and `count=80`. Stop paging when the returned page has fewer than 80
+rows and still filter decoded rows to `market=2`; public servers can return
+non-BJ rows if paging continues past the BJ range.
+
 Response: header 4 bytes (count at `[2:4]`). Per row: market(1) + code(6) +
 active(2), then 9 signed varints (price, pre_close, open, high, low,
 server_time, neg_price, vol, cur_vol), amount(float32), 8 skipped varints, then
 a 56-byte fixed tail (rise_speed = int16 at tail offset +2, /100). Prices are 厘
 (/100); OHLC/pre_close are deltas added to price before scaling.
+
+## 0x122B MAC batch symbol quotes (`mac_quote.go`)
+
+MAC HQ uses a `0x01` direct frame with a 10-byte header:
+
+```text
+[0]    0x01
+[1:5]  customize = 0
+[5]    packet type = 0x01
+[6:8]  len(method+body)
+[8:10] len(method+body)
+[10:12] method = 0x122B
+[12:]  bitmap(20) + count(2) + count * (market(2) + code(22))
+```
+
+Unlike `sp_client.go`, this path does not send SP login. It connects to MAC HQ
+servers such as `121.36.248.138:7709` and reuses the normal 16-byte response
+header + optional zlib body decoder.
+
+Response layout starts with bitmap echo(20), total(4), count(2), then rows of
+market(2)+code(22 GBK/GB18030)+name(44 GBK/GB18030)+4 bytes per active bitmap
+field. `marketd` decodes only identity fields for securities master: market,
+symbol, and name. BJ import batches these requests by 80 symbols.
 
 ## 0x053F top board
 

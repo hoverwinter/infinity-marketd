@@ -258,6 +258,8 @@ go run ./cmd/marketd quote-sweep \
 - 使用批量 quote workflow 获取行情。
 - `--limit` 可限制扫盘数量，方便 smoke test。
 
+该段描述的是 legacy `0x044E` + `0x0450` 证券列表路径。`quote-sweep --market bj` 当前仍走这条 discovery，因此 public server 不支持 BJ `0x0450` 时会失败。
+
 证券列表返回结构：
 
 | 字段 | 含义 |
@@ -434,14 +436,17 @@ go run ./cmd/marketd quote \
 
 ### `bj` 和 `exhq` 边界
 
-当前标准行情实现支持 `sh` / `sz`，并启用 `bj` 单只 quote 和证券列表 discovery。
+当前标准行情实现支持 `sh` / `sz`，并启用 `bj` 单只 quote。BJ 证券主数据和 provider securities endpoint 使用单独的兼容列表路径。
 
 `bj`：
 
 - 已验证 TDX 标准行情 quote market byte 为 `2`。
 - `bj:920001`、`920001`、`920799` 在 `60.191.117.167:7709` 和 `180.153.18.170:7709` 上返回 `market=bj` 的标准 quote response。
 - `920*`、`8*`、`4*` 会按本地市场推断映射到 `bj`；如果 server 返回不匹配的 fallback 代码，客户端会用 response identity 校验拒绝该结果。
-- 证券数量/证券列表使用同一标准行情 market byte `2`，`quote-sweep --market bj` 和 `/api/tdx/hq/securities?market=bj` 均会走该路径；协议 fixture 覆盖该路径，2026-06-10 对 `180.153.18.170:7709` 和 `60.191.117.167:7709` 的 live 小样本请求返回 read timeout，因此如果所选 server 不返回可用列表，命令/API 返回明确的 upstream/source failure。
+- 标准行情 market byte `2` 的 `0x0450` 证券列表在 public server 上不可靠；2026-06-10 对 `180.153.18.170:7709` 和 `60.191.117.167:7709` 的 live 小样本请求返回 read timeout。
+- `refresh-security-master --source tdx --market bj` 和 `/api/tdx/hq/securities?market=bj` 使用 `FetchSecurityListWithNames`：先从 HQ `0x054B category=12`、`sort=code` 分页枚举 BJ 代码，再用 MAC HQ `0x122B` 批量读取当前名称。
+- `0x054B category=12` 每页按 80 条处理；返回不足 80 条即停止，并过滤 `market_code=2`，避免越界页混入非 BJ 行。
+- `quote-sweep --market bj` 尚未切到兼容路径，仍可能因 `0x0450` 超时失败；显式 `quote-sweep --symbol bj:920001` 可正常走单只 quote。
 
 `exhq`：
 
@@ -724,7 +729,7 @@ close
 
 ### 在线证券列表原理
 
-TDX 标准行情提供两个请求：
+SH/SZ 的在线证券列表使用 TDX 标准行情两个 legacy 请求：
 
 | 函数 | 作用 |
 | --- | --- |
@@ -755,6 +760,13 @@ item_count * 29-byte record
 | `pre_close` | `record[21:25]`，TDX float-like 解码 |
 
 `QuoteSweep` 在未传入显式 symbol 时，会先调用证券列表发现，再进入批量 quote。
+
+BJ securities master/provider 不使用上面的 legacy list。`internal/tdx/security_list_compat.go` 的 `FetchSecurityListWithNames` 对 `bj` 使用：
+
+1. `HQQuotesListRequest{Category: 12, SortType: QuotesSortCode, Count: 80}` 枚举北证 A 股代码。
+2. 对返回 rows 过滤 `market_code=2`，并在返回不足 80 条时停止翻页。
+3. `MACSymbolQuotes` (`0x122B`) 按 80 个 symbol 一批读取 `name`。
+4. 输出统一的 `[]Security`，`VolUnit=100`，`DecimalPoint=2`，供 MySQL securities master 和 `/api/tdx/hq/securities` 使用。
 
 ### ExHQ 实现原理
 
@@ -1137,7 +1149,7 @@ go run ./cmd/marketd quote-sweep \
 ## 当前限制
 
 - `bj` 实时行情支持已验证的 `920*` quote；旧 `8*` / `4*` 代码会按 `bj` 请求，但实际可用性取决于 server 是否仍提供该代码，返回不匹配时会报 identity mismatch。
-- `bj` 证券数量/证券列表已走标准行情 market byte `2`，但 public server 可用性仍需按 server 观察；失败时返回 upstream/source error，不自动 fallback 到其他来源。
+- `bj` securities master 和 `/api/tdx/hq/securities` 已走 `0x054B category=12` + MAC `0x122B` 兼容路径；`quote-sweep --market bj` 仍走旧 discovery，可能因 public server 的 `0x0450` 超时失败。
 - 含 `bj` 的 quote request 当前强制单只分包；live 多条 response 解析需要单独完善后再放开批量。
 - `exhq` public server 可用性不稳定；metadata 可用不代表 quote/K 线/分时/分笔也可用。
 - `exhq` 文本字段已按 GB18030/GBK fallback 解码；解码失败时置空展示字段，不丢弃 market/code。
@@ -1149,7 +1161,7 @@ go run ./cmd/marketd quote-sweep \
 
 ## 后续方向
 
-- 继续观察 `bj` 证券列表 discovery 在不同 public server 上的稳定性，以及 live 多条 quote response 的完整 parser 边界。
+- 继续观察 `quote-sweep --market bj` 的 legacy discovery 在不同 public server 上的稳定性，以及 live 多条 quote response 的完整 parser 边界。
 - 给 `exhq` 增加专门的 server probe 命令，区分 count/list/quote/K 线等能力。
 - ~~如果需要长期运行的行情服务，再引入连接池、心跳和定期重连。~~ 已由 `quote-serve` / `internal/quotesvc` 实现（见上节）。
 - 如果需要持久化 quote snapshot，另起 OpenSpec change 定义 ClickHouse schema、保留策略和去重语义。
