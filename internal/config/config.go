@@ -106,9 +106,10 @@ type DatabaseConfig struct {
 }
 
 type TDXConfig struct {
-	Root        string   `yaml:"root"`
-	HQServers   []string `yaml:"hq_servers"`
-	ExHQServers []string `yaml:"exhq_servers"`
+	Root         string   `yaml:"root"`
+	HQServers    []string `yaml:"hq_servers"`
+	MACHQServers []string `yaml:"mac_hq_servers"`
+	ExHQServers  []string `yaml:"exhq_servers"`
 }
 
 type RuntimeConfig struct {

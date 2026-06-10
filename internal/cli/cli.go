@@ -43,7 +43,7 @@ var fetchHQXDXRInfo = tdx.FetchHQXDXRInfo
 var fetchHQFinanceInfo = tdx.FetchHQFinanceInfo
 var fetchHQBlockMeta = tdx.FetchHQBlockMeta
 var fetchHQBlockMembers = tdx.FetchHQBlockMembers
-var fetchHQSecurityList = tdx.FetchSecurityList
+var fetchHQSecurityList = tdx.FetchSecurityListWithNames
 var fetchExMarkets = tdx.FetchExMarkets
 var fetchExQuote = tdx.FetchExQuote
 var fetchExInstrumentCount = tdx.FetchExInstrumentCount
@@ -264,6 +264,17 @@ func configuredExHQServers(explicit []string, overrides config.Overrides) ([]str
 		return nil, err
 	}
 	return append([]string(nil), cfg.TDX.ExHQServers...), nil
+}
+
+func configuredMACHQServers(explicit []string, overrides config.Overrides) ([]string, error) {
+	if len(explicit) > 0 || overrides.ConfigPath == "" {
+		return explicit, nil
+	}
+	cfg, err := config.Load(overrides)
+	if err != nil {
+		return nil, err
+	}
+	return append([]string(nil), cfg.TDX.MACHQServers...), nil
 }
 
 func runQuote(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
@@ -774,6 +785,7 @@ func runRefreshSecurityMaster(ctx context.Context, args []string, stdout io.Writ
 	var overrides config.Overrides
 	var markets listFlags
 	var servers listFlags
+	var macServers listFlags
 	var sourceName string
 	var filePath string
 	var dryRun bool
@@ -782,6 +794,7 @@ func runRefreshSecurityMaster(ctx context.Context, args []string, stdout io.Writ
 	fs.StringVar(&sourceName, "source", securitymaster.SourceTDX, "security master source: tdx or file")
 	fs.Var(&markets, "market", "market to refresh; repeat or comma-separate, defaults to sh,sz,bj")
 	fs.Var(&servers, "server", "TDX HQ server host:port for --source tdx; repeat or comma-separate")
+	fs.Var(&macServers, "mac-server", "TDX MAC HQ server host:port for BJ names; repeat or comma-separate")
 	fs.StringVar(&filePath, "file", "", "normalized CSV file for --source file")
 	fs.BoolVar(&dryRun, "dry-run", false, "fetch and normalize without writing MySQL")
 	if err := fs.Parse(args); err != nil {
@@ -796,7 +809,14 @@ func runRefreshSecurityMaster(ctx context.Context, args []string, stdout io.Writ
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		source = securitymaster.NewTDXSource(fetchHQSecurityList, hqClientOptions(serverList))
+		macServerList, err := configuredMACHQServers([]string(macServers), overrides)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		opts := hqClientOptions(serverList)
+		opts.MACServers = macServerList
+		source = securitymaster.NewTDXSource(fetchHQSecurityList, opts)
 	case securitymaster.SourceFile:
 		if strings.TrimSpace(filePath) == "" {
 			fmt.Fprintln(stderr, "--file is required for --source file")

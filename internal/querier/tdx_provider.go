@@ -58,7 +58,7 @@ func DefaultTDXProvider() *TDXProvider {
 	return &TDXProvider{
 		FetchRealtimeQuotes:          tdx.FetchRealtimeQuotes,
 		ProbeHQServers:               tdx.ProbeHQServers,
-		FetchSecurityList:            tdx.FetchSecurityList,
+		FetchSecurityList:            tdx.FetchSecurityListWithNames,
 		FetchHQSecurityBars:          tdx.FetchHQSecurityBars,
 		FetchHQIndexBars:             tdx.FetchHQIndexBars,
 		FetchHQMinuteTime:            tdx.FetchHQMinuteTime,

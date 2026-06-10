@@ -74,6 +74,7 @@ type QuoteLevel struct {
 type QuoteClientOptions struct {
 	Server          string
 	Servers         []string
+	MACServers      []string
 	Timeout         time.Duration
 	BatchSize       int
 	TradeDate       time.Time

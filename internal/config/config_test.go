@@ -44,6 +44,7 @@ mysql:
 tdx:
   root: "/tmp/tdx"
   hq_servers: ["hq1:7709", "hq2:7709"]
+  mac_hq_servers: ["mac1:7709", "mac2:7709"]
   exhq_servers: ["ex1:7727", "ex2:7727"]
 runtime:
   timezone: "Asia/Shanghai"
@@ -85,6 +86,9 @@ logging:
 	}
 	if strings.Join(cfg.TDX.HQServers, ",") != "hq1:7709,hq2:7709" {
 		t.Fatalf("tdx hq servers = %#v", cfg.TDX.HQServers)
+	}
+	if strings.Join(cfg.TDX.MACHQServers, ",") != "mac1:7709,mac2:7709" {
+		t.Fatalf("tdx mac hq servers = %#v", cfg.TDX.MACHQServers)
 	}
 	if strings.Join(cfg.TDX.ExHQServers, ",") != "ex1:7727,ex2:7727" {
 		t.Fatalf("tdx exhq servers = %#v", cfg.TDX.ExHQServers)
