@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hoverwinter/infinity-marketd/internal/onlineadjust"
 	"github.com/hoverwinter/infinity-marketd/internal/tdx"
 )
 
@@ -19,11 +20,15 @@ func TestTDXProviderRoutesDoNotAffectV1Bars(t *testing.T) {
 		tdxCalls++
 		return nil, nil
 	}
+	provider.FetchHQAdjustedBarsOnline = func(context.Context, onlineadjust.HQAdjustedBarsOnlineRequest, tdx.QuoteClientOptions) (onlineadjust.HQAdjustedBarsOnlineResult, error) {
+		tdxCalls++
+		return onlineadjust.HQAdjustedBarsOnlineResult{}, nil
+	}
 	repo := &fakeRepo{}
 	server := httptest.NewServer(NewServerWithTDXProvider(repo, provider).Handler())
 	defer server.Close()
 
-	resp, err := http.Get(server.URL + "/api/v1/bars?market=sh&symbol=600519&period=1d")
+	resp, err := http.Get(server.URL + "/api/v1/bars?market=sh&symbol=600519&period=1d&adjust=qfq")
 	if err != nil {
 		t.Fatal(err)
 	}

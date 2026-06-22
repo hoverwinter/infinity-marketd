@@ -334,9 +334,9 @@ GET /api/tdx/exhq/history-bars?market=47&code=IF1709&start_date=20260601&end_dat
 | `GET /api/tdx/hq/quotes-list` | 排序行情列表（扫盘） | `category`、`sort`(名/原始)、`start`、`count`、`reverse`、`exclude`(new,kcb,st,cyb,bj/原始)、`server` |
 | `GET /api/tdx/hq/top-board` | 9 组排行榜 | `category`、`size`(1-100)、`server` |
 | `GET /api/tdx/hq/lhb` | 龙虎榜（F10 资金动向解析） | `market`、`symbol`、`alias?`、`server` |
-| `GET /api/tdx/sp/board-members` | SP 实时板块成分 | `server`(必填)、`board`、`sort_type`、`count`、`order`、`timeout?` |
-| `GET /api/tdx/fund/kline` | 基金 K 线（7727） | `server`(必填)、`code`、`period`、`count`、`timeout?` |
-| `GET /api/tdx/fund/detail` | 基金明细（7727 原始） | `server`(必填)、`code`、`mode?`、`timeout?` |
+| `GET /api/tdx/sp/board-members` | SP 实时板块成分 | `server` 或 `best=true`、`board`、`sort_type`、`count`、`order`、`timeout?` |
+| `GET /api/tdx/fund/kline` | 基金 K 线（7727） | `server` 或 `best=true`、`code`、`period`、`count`、`timeout?` |
+| `GET /api/tdx/fund/detail` | 基金明细（7727 原始） | `server` 或 `best=true`、`code`、`mode?`、`timeout?` |
 
 错误映射沿用既有约定：解码失败 → `502`，连接/超时/全 server 失败 → `503`，参数非法 → `400`。
 
@@ -347,6 +347,33 @@ curl 'http://127.0.0.1:8808/api/tdx/hq/quotes-list?category=0&sort=turnover&coun
 curl 'http://127.0.0.1:8808/api/tdx/hq/top-board?category=0&size=10'
 curl 'http://127.0.0.1:8808/api/tdx/hq/lhb?market=sh&symbol=600519'
 curl 'http://127.0.0.1:8808/api/tdx/sp/board-members?server=<sp>:7709&board=880472&count=50'
+curl 'http://127.0.0.1:8808/api/tdx/sp/board-members?best=true&board=880472&count=50'
 curl 'http://127.0.0.1:8808/api/tdx/fund/kline?server=<fund>:7727&code=159915&period=day&count=100'
 curl 'http://127.0.0.1:8808/api/tdx/fund/detail?server=<fund>:7727&code=159915'
 ```
+
+## 兼容补齐 API（compact quotes / tick chart / online adjust）
+
+这些端点同样是 live provider read，不落库，不更新 task run / watermark。
+
+| 端点 | 说明 | 主要参数 |
+| --- | --- | --- |
+| `GET /api/tdx/hq/compact-quotes` | HQ `0x054C` compact batch quotes | `symbol`/`symbols`、`server` |
+| `GET /api/tdx/hq/tick-chart` | HQ `0x0537` tick chart | `market`、`symbol`、`start`、`count`、`server` |
+| `GET /api/tdx/hq/adjusted-bars` | live raw HQ bars + live XDXR 的一次性复权结果 | `market`、`symbol`、`category`、`start`、`count`、`adjust=none/qfq/hfq`、`server` |
+| `GET /api/tdx/sp/servers` | 内置 SP/MAC 候选 server | 无 |
+| `GET /api/tdx/sp/probe` | SP 握手 probe / `best=true` 选线来源 | `server`/`servers`、`timeout?` |
+| `GET /api/tdx/fund/servers` | 内置 fund 7727 候选 server | 无 |
+| `GET /api/tdx/fund/probe` | fund 7727 login/bootstrap probe / `best=true` 选线来源 | `server`/`servers`、`timeout?` |
+
+示例：
+
+```bash
+curl 'http://127.0.0.1:8808/api/tdx/hq/compact-quotes?symbol=sh:600519&symbol=sz:000001'
+curl 'http://127.0.0.1:8808/api/tdx/hq/tick-chart?market=sh&symbol=600519&count=240'
+curl 'http://127.0.0.1:8808/api/tdx/hq/adjusted-bars?market=sh&symbol=600519&category=9&count=100&adjust=qfq'
+curl 'http://127.0.0.1:8808/api/tdx/sp/probe?server=121.36.248.138:7709&timeout=3s'
+curl 'http://127.0.0.1:8808/api/tdx/fund/probe?server=47.102.108.214:7727&timeout=3s'
+```
+
+`/api/tdx/hq/adjusted-bars` 是 mootdx 风格的一次性便利接口。它不会写入 `a_share_xdxr_events` 或 `a_share_adjust_factors_1d`，也不会改变 `/api/v1/bars?adjust=...` 的持久化查询语义。

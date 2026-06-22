@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hoverwinter/infinity-marketd/internal/onlineadjust"
 	"github.com/hoverwinter/infinity-marketd/internal/tdx"
 )
 
@@ -40,6 +41,49 @@ func queryTimeout(r *http.Request) time.Duration {
 		}
 	}
 	return 5 * time.Second
+}
+
+func (s *Server) handleTDXHQCompactQuotes(w http.ResponseWriter, r *http.Request) {
+	symbols := splitQueryValues(r, "symbol", "symbols")
+	if len(symbols) == 0 {
+		writeError(w, http.StatusBadRequest, TDXValidationError{"at least one symbol is required"})
+		return
+	}
+	if len(symbols) > tdx.MaxCompactBatchQuoteCount {
+		writeError(w, http.StatusBadRequest, TDXValidationError{"compact batch quote symbol count must be <= " + strconv.Itoa(tdx.MaxCompactBatchQuoteCount)})
+		return
+	}
+	requests := make([]tdx.QuoteRequest, 0, len(symbols))
+	for _, symbol := range symbols {
+		req, err := tdx.ParseQuoteRequest(symbol)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, TDXValidationError{err.Error()})
+			return
+		}
+		requests = append(requests, req)
+	}
+	items, err := s.tdxProvider.FetchHQCompactBatchQuotes(r.Context(), requests, hqOptionsFromRequestNoError(r))
+	writeTDXResult(w, items, err)
+}
+
+func (s *Server) handleTDXHQTickChart(w http.ResponseWriter, r *http.Request) {
+	start, err := queryInt(r, "start", 0)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	count, err := queryInt(r, "count", tdx.MaxHQTickChartCount)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req, err := tdx.ParseHQTickChartRequest(r.URL.Query().Get("market"), r.URL.Query().Get("symbol"), start, count)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, TDXValidationError{err.Error()})
+		return
+	}
+	points, err := s.tdxProvider.FetchHQTickChart(r.Context(), req, hqOptionsFromRequestNoError(r))
+	writeTDXResult(w, points, err)
 }
 
 func (s *Server) handleTDXHQQuotesList(w http.ResponseWriter, r *http.Request) {
@@ -111,10 +155,53 @@ func (s *Server) handleTDXHQLHB(w http.ResponseWriter, r *http.Request) {
 	writeTDXResult(w, result, err)
 }
 
+func (s *Server) handleTDXHQAdjustedBarsOnline(w http.ResponseWriter, r *http.Request) {
+	category, err := queryInt(r, "category", tdx.HQKLineDayAlt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	start, err := queryInt(r, "start", 0)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	count, err := queryInt(r, "count", tdx.DefaultHQKLineCount)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req, err := onlineadjust.NormalizeRequest(onlineadjust.HQAdjustedBarsOnlineRequest{
+		Market: r.URL.Query().Get("market"), Symbol: r.URL.Query().Get("symbol"), Category: category, Start: start, Count: count, Adjust: strings.TrimSpace(r.URL.Query().Get("adjust")),
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, TDXValidationError{err.Error()})
+		return
+	}
+	result, err := s.tdxProvider.FetchHQAdjustedBarsOnline(r.Context(), req, hqOptionsFromRequestNoError(r))
+	writeTDXResult(w, result, err)
+}
+
+func (s *Server) handleTDXSPServers(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.tdxProvider.SPServerCandidates())
+}
+
+func (s *Server) handleTDXSPProbe(w http.ResponseWriter, r *http.Request) {
+	results := s.tdxProvider.ProbeSPServers(r.Context(), splitQueryValues(r, "server", "servers"), queryTimeout(r))
+	writeJSON(w, http.StatusOK, results)
+}
+
 func (s *Server) handleTDXSPBoardMembers(w http.ResponseWriter, r *http.Request) {
 	server := strings.TrimSpace(r.URL.Query().Get("server"))
+	if server == "" && queryBool(r, "best") {
+		server = tdx.BestSPServer(s.tdxProvider.ProbeSPServers(r.Context(), nil, queryTimeout(r)))
+		if server == "" {
+			writeError(w, http.StatusServiceUnavailable, TDXUpstreamError{"no reachable SP server found by probe"})
+			return
+		}
+	}
 	if server == "" {
-		writeError(w, http.StatusBadRequest, TDXValidationError{"server is required for SP board members"})
+		writeError(w, http.StatusBadRequest, TDXValidationError{"server is required for SP board members unless best=true is set"})
 		return
 	}
 	sortType, err := queryInt(r, "sort_type", 0)
@@ -136,10 +223,26 @@ func (s *Server) handleTDXSPBoardMembers(w http.ResponseWriter, r *http.Request)
 	writeTDXResult(w, items, err)
 }
 
+func (s *Server) handleTDXFundServers(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.tdxProvider.FundServerCandidates())
+}
+
+func (s *Server) handleTDXFundProbe(w http.ResponseWriter, r *http.Request) {
+	results := s.tdxProvider.ProbeFundServers(r.Context(), splitQueryValues(r, "server", "servers"), queryTimeout(r))
+	writeJSON(w, http.StatusOK, results)
+}
+
 func (s *Server) handleTDXFundKline(w http.ResponseWriter, r *http.Request) {
 	server := strings.TrimSpace(r.URL.Query().Get("server"))
+	if server == "" && queryBool(r, "best") {
+		server = tdx.BestFundServer(s.tdxProvider.ProbeFundServers(r.Context(), nil, queryTimeout(r)))
+		if server == "" {
+			writeError(w, http.StatusServiceUnavailable, TDXUpstreamError{"no reachable fund server found by probe"})
+			return
+		}
+	}
 	if server == "" {
-		writeError(w, http.StatusBadRequest, TDXValidationError{"server is required for fund kline"})
+		writeError(w, http.StatusBadRequest, TDXValidationError{"server is required for fund kline unless best=true is set"})
 		return
 	}
 	count, err := queryInt(r, "count", 100)
@@ -157,8 +260,15 @@ func (s *Server) handleTDXFundKline(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTDXFundDetail(w http.ResponseWriter, r *http.Request) {
 	server := strings.TrimSpace(r.URL.Query().Get("server"))
+	if server == "" && queryBool(r, "best") {
+		server = tdx.BestFundServer(s.tdxProvider.ProbeFundServers(r.Context(), nil, queryTimeout(r)))
+		if server == "" {
+			writeError(w, http.StatusServiceUnavailable, TDXUpstreamError{"no reachable fund server found by probe"})
+			return
+		}
+	}
 	if server == "" {
-		writeError(w, http.StatusBadRequest, TDXValidationError{"server is required for fund detail"})
+		writeError(w, http.StatusBadRequest, TDXValidationError{"server is required for fund detail unless best=true is set"})
 		return
 	}
 	mode, err := queryInt(r, "mode", 0)

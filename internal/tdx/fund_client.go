@@ -50,11 +50,20 @@ type HQFundDetailItem struct {
 	Values [6]uint16 `json:"values"`
 }
 
+type HQFundDetailDecodedItem struct {
+	ID        uint32    `json:"id"`
+	Name      string    `json:"name"`
+	Unit      string    `json:"unit,omitempty"`
+	Value     *float64  `json:"value,omitempty"`
+	RawValues [6]uint16 `json:"raw_values"`
+}
+
 // HQFundDetail is a 0x2488 fund detail response.
 type HQFundDetail struct {
-	Category byte               `json:"category"`
-	Code     string             `json:"code"`
-	Items    []HQFundDetailItem `json:"items"`
+	Category byte                      `json:"category"`
+	Code     string                    `json:"code"`
+	Items    []HQFundDetailItem        `json:"items"`
+	Decoded  []HQFundDetailDecodedItem `json:"decoded,omitempty"`
 }
 
 // HQFundBar is one fund K-line bar.
@@ -201,7 +210,42 @@ func DecodeFundDetail(body []byte) (HQFundDetail, error) {
 		detail.Items = append(detail.Items, item)
 		pos += 16
 	}
+	detail.Decoded = DecodeFundDetailItems(detail.Items)
 	return detail, nil
+}
+
+type fundDetailDictionaryEntry struct {
+	Name      string
+	Unit      string
+	Scale     float64
+	ValueSlot int
+}
+
+var fundDetailDictionary = map[uint32]fundDetailDictionaryEntry{
+	7:  {Name: "unit_net_value", Unit: "yuan", Scale: 10000, ValueSlot: 0},
+	11: {Name: "accumulated_net_value", Unit: "yuan", Scale: 10000, ValueSlot: 0},
+}
+
+func DecodeFundDetailItems(items []HQFundDetailItem) []HQFundDetailDecodedItem {
+	decoded := make([]HQFundDetailDecodedItem, 0, len(items))
+	for _, item := range items {
+		entry, ok := fundDetailDictionary[item.ID]
+		if !ok {
+			continue
+		}
+		out := HQFundDetailDecodedItem{
+			ID:        item.ID,
+			Name:      entry.Name,
+			Unit:      entry.Unit,
+			RawValues: item.Values,
+		}
+		if entry.Scale > 0 && entry.ValueSlot >= 0 && entry.ValueSlot < len(item.Values) {
+			value := float64(item.Values[entry.ValueSlot]) / entry.Scale
+			out.Value = &value
+		}
+		decoded = append(decoded, out)
+	}
+	return decoded
 }
 
 // DecodeFundKlines decodes a 0x2489 response: period at [24:26], count at [40:42],

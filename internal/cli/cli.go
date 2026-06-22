@@ -142,14 +142,28 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runQuoteServe(ctx, args[1:], stdout, stderr)
 	case "quote-status":
 		return runQuoteStatus(ctx, args[1:], stdout, stderr)
+	case "hq-compact-quotes":
+		return runHQCompactQuotes(ctx, args[1:], stdout, stderr)
+	case "hq-tick-chart":
+		return runHQTickChart(ctx, args[1:], stdout, stderr)
 	case "hq-quotes-list":
 		return runHQQuotesList(ctx, args[1:], stdout, stderr)
 	case "hq-top-board":
 		return runHQTopBoard(ctx, args[1:], stdout, stderr)
 	case "hq-lhb":
 		return runHQLHB(ctx, args[1:], stdout, stderr)
+	case "hq-adjusted-bars-online":
+		return runHQAdjustedBarsOnline(ctx, args[1:], stdout, stderr)
+	case "sp-servers":
+		return runSPServers(args[1:], stdout, stderr)
+	case "sp-probe":
+		return runSPProbe(ctx, args[1:], stdout, stderr)
 	case "sp-board-members":
 		return runSPBoardMembers(ctx, args[1:], stdout, stderr)
+	case "fund-servers":
+		return runFundServers(args[1:], stdout, stderr)
+	case "fund-probe":
+		return runFundProbe(ctx, args[1:], stdout, stderr)
 	case "fund-kline":
 		return runFundKline(ctx, args[1:], stdout, stderr)
 	case "fund-detail":
@@ -3371,10 +3385,17 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  hq-block")
 	fmt.Fprintln(out, "  quote-serve")
 	fmt.Fprintln(out, "  quote-status")
+	fmt.Fprintln(out, "  hq-compact-quotes")
+	fmt.Fprintln(out, "  hq-tick-chart")
 	fmt.Fprintln(out, "  hq-quotes-list")
 	fmt.Fprintln(out, "  hq-top-board")
 	fmt.Fprintln(out, "  hq-lhb")
+	fmt.Fprintln(out, "  hq-adjusted-bars-online")
+	fmt.Fprintln(out, "  sp-servers")
+	fmt.Fprintln(out, "  sp-probe")
 	fmt.Fprintln(out, "  sp-board-members")
+	fmt.Fprintln(out, "  fund-servers")
+	fmt.Fprintln(out, "  fund-probe")
 	fmt.Fprintln(out, "  fund-kline")
 	fmt.Fprintln(out, "  fund-detail")
 	fmt.Fprintln(out, "  exquote-markets")

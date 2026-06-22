@@ -30,7 +30,7 @@ func TestDecodeFundDetail(t *testing.T) {
 	body[0] = 0x21
 	copy(body[1:], []byte("159915"))
 	binary.LittleEndian.PutUint16(body[36:38], 2)
-	for _, id := range []uint32{100, 200} {
+	for _, id := range []uint32{7, 200} {
 		row := make([]byte, 16)
 		binary.LittleEndian.PutUint32(row[0:4], id)
 		for j := 0; j < 6; j++ {
@@ -47,6 +47,25 @@ func TestDecodeFundDetail(t *testing.T) {
 	}
 	if d.Items[1].ID != 200 || d.Items[1].Values[0] != 200 || d.Items[1].Values[5] != 205 {
 		t.Fatalf("item wrong: %+v", d.Items[1])
+	}
+	if len(d.Decoded) != 1 {
+		t.Fatalf("decoded len = %d", len(d.Decoded))
+	}
+	if d.Decoded[0].ID != 7 || d.Decoded[0].Name != "unit_net_value" || d.Decoded[0].Value == nil || *d.Decoded[0].Value != 0.0007 {
+		t.Fatalf("decoded wrong: %+v", d.Decoded[0])
+	}
+}
+
+func TestDecodeFundDetailItemsSkipsUnknownIDs(t *testing.T) {
+	decoded := DecodeFundDetailItems([]HQFundDetailItem{
+		{ID: 7, Values: [6]uint16{12610}},
+		{ID: 999, Values: [6]uint16{1, 2, 3, 4, 5, 6}},
+	})
+	if len(decoded) != 1 {
+		t.Fatalf("decoded len = %d", len(decoded))
+	}
+	if decoded[0].ID != 7 || decoded[0].Name == "" || decoded[0].Value == nil || *decoded[0].Value != 1.261 {
+		t.Fatalf("decoded = %+v", decoded[0])
 	}
 }
 

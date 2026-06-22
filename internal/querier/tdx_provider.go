@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hoverwinter/infinity-marketd/internal/onlineadjust"
 	"github.com/hoverwinter/infinity-marketd/internal/tdx"
 )
 
@@ -44,12 +45,19 @@ type TDXProvider struct {
 	FetchExTransactions          func(context.Context, tdx.ExQuoteRequest, int, int, tdx.ExQuoteClientOptions) ([]tdx.ExTransaction, error)
 	FetchExHistoryTransactions   func(context.Context, tdx.ExQuoteRequest, int, int, int, tdx.ExQuoteClientOptions) ([]tdx.ExTransaction, error)
 	FetchExHistoryBarsRange      func(context.Context, tdx.ExQuoteRequest, int, int, tdx.ExQuoteClientOptions) ([]tdx.ExBar, error)
+	FetchHQCompactBatchQuotes    func(context.Context, []tdx.QuoteRequest, tdx.QuoteClientOptions) ([]tdx.HQCompactBatchQuote, error)
+	FetchHQTickChart             func(context.Context, tdx.HQTickChartRequest, tdx.QuoteClientOptions) ([]tdx.HQTickChartPoint, error)
 	FetchHQQuotesList            func(context.Context, tdx.HQQuotesListRequest, tdx.QuoteClientOptions) ([]tdx.HQQuotesListItem, error)
 	FetchHQTopBoard              func(context.Context, uint16, int, tdx.QuoteClientOptions) ([]tdx.HQTopBoardGroup, error)
 	FetchHQLHB                   func(context.Context, tdx.HQMinuteRequest, []string, tdx.QuoteClientOptions) (tdx.HQLHBResult, error)
+	SPServerCandidates           func() []tdx.TDXServerCandidate
+	FundServerCandidates         func() []tdx.TDXServerCandidate
+	ProbeSPServers               func(context.Context, []string, time.Duration) []tdx.ServerProbeResult
+	ProbeFundServers             func(context.Context, []string, time.Duration) []tdx.ServerProbeResult
 	FetchSPBoardMembers          func(context.Context, string, string, uint16, int, uint16, time.Duration) ([]tdx.HQBoardMember, error)
 	FetchFundKline               func(context.Context, string, string, string, int, time.Duration) ([]tdx.HQFundBar, error)
 	FetchFundDetail              func(context.Context, string, string, uint16, time.Duration) (tdx.HQFundDetail, error)
+	FetchHQAdjustedBarsOnline    func(context.Context, onlineadjust.HQAdjustedBarsOnlineRequest, tdx.QuoteClientOptions) (onlineadjust.HQAdjustedBarsOnlineResult, error)
 	LoadHQBestIPCache            func(string) (tdx.HQBestIPCache, error)
 	RefreshHQBestIPCache         func(context.Context, []string, tdx.QuoteClientOptions) (tdx.HQBestIPCache, error)
 }
@@ -82,12 +90,19 @@ func DefaultTDXProvider() *TDXProvider {
 		FetchExTransactions:          tdx.FetchExTransactions,
 		FetchExHistoryTransactions:   tdx.FetchExHistoryTransactions,
 		FetchExHistoryBarsRange:      tdx.FetchExHistoryBarsRange,
+		FetchHQCompactBatchQuotes:    tdx.FetchHQCompactBatchQuotes,
+		FetchHQTickChart:             tdx.FetchHQTickChart,
 		FetchHQQuotesList:            tdx.FetchHQQuotesList,
 		FetchHQTopBoard:              tdx.FetchHQTopBoard,
 		FetchHQLHB:                   tdx.FetchHQLHB,
+		SPServerCandidates:           tdx.SPServerCandidates,
+		FundServerCandidates:         tdx.FundServerCandidates,
+		ProbeSPServers:               tdx.ProbeSPServers,
+		ProbeFundServers:             tdx.ProbeFundServers,
 		FetchSPBoardMembers:          tdx.FetchSPBoardMembers,
 		FetchFundKline:               tdx.FetchFundKline,
 		FetchFundDetail:              tdx.FetchFundDetail,
+		FetchHQAdjustedBarsOnline:    onlineadjust.FetchHQAdjustedBarsOnline,
 		LoadHQBestIPCache:            tdx.LoadHQBestIPCache,
 		RefreshHQBestIPCache:         tdx.RefreshHQBestIPCache,
 	}
@@ -131,10 +146,17 @@ func (s *Server) registerTDXRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/tdx/hq/block-meta", s.handleTDXHQBlockMeta)
 	mux.HandleFunc("GET /api/tdx/hq/block-chunk", s.handleTDXHQBlockChunk)
 	mux.HandleFunc("GET /api/tdx/hq/block", s.handleTDXHQBlock)
+	mux.HandleFunc("GET /api/tdx/hq/compact-quotes", s.handleTDXHQCompactQuotes)
+	mux.HandleFunc("GET /api/tdx/hq/tick-chart", s.handleTDXHQTickChart)
 	mux.HandleFunc("GET /api/tdx/hq/quotes-list", s.handleTDXHQQuotesList)
 	mux.HandleFunc("GET /api/tdx/hq/top-board", s.handleTDXHQTopBoard)
 	mux.HandleFunc("GET /api/tdx/hq/lhb", s.handleTDXHQLHB)
+	mux.HandleFunc("GET /api/tdx/hq/adjusted-bars", s.handleTDXHQAdjustedBarsOnline)
+	mux.HandleFunc("GET /api/tdx/sp/servers", s.handleTDXSPServers)
+	mux.HandleFunc("GET /api/tdx/sp/probe", s.handleTDXSPProbe)
 	mux.HandleFunc("GET /api/tdx/sp/board-members", s.handleTDXSPBoardMembers)
+	mux.HandleFunc("GET /api/tdx/fund/servers", s.handleTDXFundServers)
+	mux.HandleFunc("GET /api/tdx/fund/probe", s.handleTDXFundProbe)
 	mux.HandleFunc("GET /api/tdx/fund/kline", s.handleTDXFundKline)
 	mux.HandleFunc("GET /api/tdx/fund/detail", s.handleTDXFundDetail)
 	mux.HandleFunc("GET /api/tdx/exhq/markets", s.handleTDXExHQMarkets)

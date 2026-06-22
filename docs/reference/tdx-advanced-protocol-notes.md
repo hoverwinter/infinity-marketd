@@ -120,3 +120,56 @@ O/H/L/C/amount + u32 volume). Beijing codes rejected. No public fund defaults.
 All decoders are covered by round-trip / `net.Pipe` tests against the documented
 layouts. There is **no live public-server validation** for these advanced reads;
 correctness rests on faithful porting from millken/tdx plus fixture tests.
+
+## 0x054C compact batch quotes (`hq_compat.go`)
+
+Request body: fixed 10-byte header with mode `5`, count at `[8:10]`, followed by
+`count * (market byte + 6-byte code)`. It uses standard HQ direct-frame command
+`0x054C`.
+
+Response layout matches the quote-list row prefix: market, code, active, varint
+price fields, server time, volume/current volume, float32 amount, inside/outside
+volume, best bid/ask, and a 56-byte tail. The tail currently exposes rise speed,
+short turnover, 2-minute amount, volume ratio, and depth. This endpoint is useful
+when callers need scanner-style compact rows rather than full five-level quote
+snapshots.
+
+## 0x0537 tick chart (`hq_compat.go`)
+
+Request body: market(2), code(6), start(2), count(2). Response body starts with
+count and then varint triples: price, average price, volume. Price is scaled by
+`/100`, average price by `/10000`. Point labels use the A-share trading minute
+sequence from `09:30`, switching to `13:00` after the morning session. Requests
+must keep `start + count <= 240`.
+
+This is deliberately separate from `/api/tdx/hq/minute`, which remains the
+existing minute-time point API.
+
+## SP/fund server discovery (`server_discovery.go`)
+
+SP and fund candidates use separate built-in lists because their handshakes are
+not standard HQ probes:
+
+- SP probe opens an SP session: ping -> connect-auth -> stage2 -> SP login.
+- Fund probe opens a fund 7727 session: SP login -> fund bootstrap.
+
+Explicit `server` overrides still win for reads. Probe/best-server helpers are
+operator conveniences, not a guarantee that every later business request will be
+accepted by that upstream.
+
+## Fund detail labels
+
+`fund-detail` keeps the raw `id + [6]uint16` rows and additionally emits decoded
+items for a small dictionary of confirmed ids. Unknown ids are preserved raw and
+are not assigned fabricated semantics.
+
+## Online adjusted bars
+
+`hq-adjusted-bars-online` and `/api/tdx/hq/adjusted-bars` fetch live HQ bars and
+live XDXR rows, compute qfq/hfq factors in memory, and return adjusted OHLC for
+that response only. For adjusted modes, the helper pages daily HQ bars from the
+latest page toward history until it covers the earliest requested raw bar date,
+so older windows either get a matching factor or an explicit insufficient-history
+error. They do not write ClickHouse and do not replace
+`/api/v1/bars?adjust=...`, which stays backed by persisted raw bars and persisted
+adjustment factors.

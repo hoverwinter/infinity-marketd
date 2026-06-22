@@ -265,3 +265,14 @@ and `GetFundDetail` are now covered by marketd's `internal/tdx` advanced online
 APIs (CLI `hq-quotes-list` / `hq-top-board` / `hq-lhb` / `sp-board-members` /
 `fund-kline` / `fund-detail` and `/api/tdx/*` provider endpoints). Decoders are
 ported from millken/tdx with fixture/`net.Pipe` tests; no live-server validation.
+
+`GetBatchQuotes` and `GetTickChart` are covered by `hq-compact-quotes` /
+`/api/tdx/hq/compact-quotes` and `hq-tick-chart` /
+`/api/tdx/hq/tick-chart`. SP/fund address candidates and protocol probes are
+covered by `sp-servers`, `sp-probe`, `fund-servers`, and `fund-probe`.
+
+The mootdx-style "fetch adjusted bars right now" convenience path is covered by
+`hq-adjusted-bars-online` and `/api/tdx/hq/adjusted-bars`. It is intentionally
+separate from `/api/v1/bars?adjust=...`: the online path is live/non-persistent,
+while `/api/v1` remains ClickHouse-backed and requires persisted adjustment
+factors.
