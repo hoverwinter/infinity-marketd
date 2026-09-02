@@ -19,6 +19,7 @@ Per-directory `CLAUDE.md` files carry the detail; this file is the map and the r
 go run ./cmd/marketd bootstrap --config configs/config.yaml
 go run ./cmd/marketd status --config configs/config.yaml
 go run ./cmd/marketd import-tdx-day --root ~/tdx-data --code 600519 --dry-run   # also import-tdx-1m / -5m
+go run ./cmd/marketd import-tdx-hq-day --market sh --symbol 600519 --since 2026-09-01 --until 2026-09-03 --dry-run
 go run ./cmd/marketd quote --symbol sh:600519 --server 180.153.18.170:7709
 go run ./cmd/marketd exquote-count --server 47.112.95.207:7720
 go run ./cmd/marketd exquote-instruments --start 0 --count 20 --server 47.112.95.207:7720

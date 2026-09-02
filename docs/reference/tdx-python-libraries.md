@@ -44,6 +44,7 @@ The strongest part of `marketd` is the data plane and operational contract. Exte
 | Area | Current marketd coverage |
 | --- | --- |
 | Local OHLCV files | `.day`, `.lc1`, `.1`, `.lc5`, `.5` parse/import into canonical ClickHouse bars |
+| Online daily OHLCV import | `import-tdx-hq-day` and Console immediate trigger import standard HQ daily K-line rows into `a_share_bars_1d` |
 | Offline package import | `import-tdx-vipdoc-zip` for local vipdoc minute packages |
 | Client-local reference data | `gbbq`, system block, custom block, custom block write, extended-market daily bars |
 | Standard HQ quote | realtime snapshots for `sh` / `sz` / verified `bj`, five-level depth, zlib response handling, TDX variable integer price decoding |

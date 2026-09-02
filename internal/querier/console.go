@@ -21,6 +21,7 @@ func (s *Server) registerConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/console/tdx/hq/quotes", s.handleConsoleTDXHQQuotes)
 	mux.HandleFunc("GET /api/console/bestip", s.handleConsoleBestIP)
 	mux.HandleFunc("POST /api/console/bestip/refresh", s.handleConsoleBestIPRefresh)
+	mux.HandleFunc("POST /api/console/imports/tdx-hq-day", s.handleConsoleImportHQDaily)
 }
 
 func (s *Server) handleConsoleSummary(w http.ResponseWriter, r *http.Request) {
@@ -176,6 +177,67 @@ func (s *Server) handleConsoleBestIPRefresh(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, status)
 }
 
+func (s *Server) handleConsoleImportHQDaily(w http.ResponseWriter, r *http.Request) {
+	if s.consoleHQDailyImporter == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("console online daily import is not configured"))
+		return
+	}
+	req, err := consoleHQDailyImportRequestFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.consoleHQDailyImporter(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func consoleHQDailyImportRequestFromRequest(r *http.Request) (ConsoleHQDailyImportRequest, error) {
+	values := r.URL.Query()
+	start, err := optionalNonNegativeInt(values.Get("start"), "start")
+	if err != nil {
+		return ConsoleHQDailyImportRequest{}, err
+	}
+	count, err := optionalNonNegativeInt(values.Get("count"), "count")
+	if err != nil {
+		return ConsoleHQDailyImportRequest{}, err
+	}
+	if count > tdx.MaxHQKLineCount*64 {
+		return ConsoleHQDailyImportRequest{}, validationError("count must be <= %d", tdx.MaxHQKLineCount*64)
+	}
+	dryRun, err := optionalBool(values.Get("dry_run"), "dry_run")
+	if err != nil {
+		return ConsoleHQDailyImportRequest{}, err
+	}
+	req := ConsoleHQDailyImportRequest{
+		Market:  strings.TrimSpace(values.Get("market")),
+		Symbol:  strings.TrimSpace(values.Get("symbol")),
+		Since:   strings.TrimSpace(values.Get("since")),
+		Until:   strings.TrimSpace(values.Get("until")),
+		Start:   start,
+		Count:   count,
+		Servers: splitQueryValues(r, "server", "servers"),
+		DryRun:  dryRun,
+	}
+	pageCount := req.Count
+	if pageCount == 0 || pageCount > tdx.MaxHQKLineCount {
+		pageCount = tdx.MaxHQKLineCount
+	}
+	if _, err := tdx.ParseHQBarsRequest(tdx.HQKLineDayAlt, req.Market, req.Symbol, req.Start, pageCount); err != nil {
+		return ConsoleHQDailyImportRequest{}, validationError("%s", err.Error())
+	}
+	if err := validateConsoleDateBounds(req.Since, req.Until); err != nil {
+		return ConsoleHQDailyImportRequest{}, err
+	}
+	if err := validateServerCandidates(req.Servers); err != nil {
+		return ConsoleHQDailyImportRequest{}, err
+	}
+	return req, nil
+}
+
 func consoleLimitFromRequest(r *http.Request) (int, error) {
 	raw := strings.TrimSpace(r.URL.Query().Get("limit"))
 	if raw == "" {
@@ -192,6 +254,65 @@ func consoleLimitFromRequest(r *http.Request) (int, error) {
 		return 0, validationError("limit must be <= %d", MaxConsoleLimit)
 	}
 	return limit, nil
+}
+
+func optionalNonNegativeInt(raw, name string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, validationError("%s must be an integer", name)
+	}
+	if value < 0 {
+		return 0, validationError("%s must be non-negative", name)
+	}
+	return value, nil
+}
+
+func optionalBool(raw, name string) (bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, validationError("%s must be a boolean", name)
+	}
+	return value, nil
+}
+
+func validateConsoleDateBounds(since, until string) error {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		return err
+	}
+	sinceDate, hasSince, err := parseConsoleDateBound(since, loc)
+	if err != nil {
+		return validationError("since %s", err.Error())
+	}
+	untilDate, hasUntil, err := parseConsoleDateBound(until, loc)
+	if err != nil {
+		return validationError("until %s", err.Error())
+	}
+	if hasSince && hasUntil && sinceDate.After(untilDate) {
+		return validationError("since must be <= until")
+	}
+	return nil
+}
+
+func parseConsoleDateBound(value string, loc *time.Location) (time.Time, bool, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false, nil
+	}
+	for _, layout := range []string{"2006-01-02", "20060102"} {
+		if t, err := time.ParseInLocation(layout, value, loc); err == nil {
+			return t, true, nil
+		}
+	}
+	return time.Time{}, true, fmt.Errorf("must be YYYY-MM-DD or YYYYMMDD")
 }
 
 func validateServerCandidates(servers []string) error {

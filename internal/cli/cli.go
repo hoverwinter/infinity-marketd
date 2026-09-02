@@ -76,6 +76,8 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runImport(ctx, args[1:], stdout, stderr, tdx.Period5m)
 	case "import-tdx-vipdoc-zip":
 		return runImportVIPDocZip(ctx, args[1:], stdout, stderr)
+	case "import-tdx-hq-day":
+		return runImportHQDaily(ctx, args[1:], stdout, stderr)
 	case "import-tdx-fin":
 		return runImportTDXFinancial(ctx, args[1:], stdout, stderr)
 	case "import-tdx-gp":
@@ -2278,6 +2280,62 @@ func runImportIntradayPoints(ctx context.Context, args []string, stdout io.Write
 	return 0
 }
 
+func runImportHQDaily(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
+	var servers listFlags
+	var bestIP bestIPFlags
+	var market, symbol, since, until string
+	var start, count int
+	var dryRun bool
+	fs := newFlagSet("import-tdx-hq-day", stderr)
+	config.RegisterCommonFlags(fs, &overrides)
+	fs.StringVar(&market, "market", "", "market sh/sz/bj")
+	fs.StringVar(&symbol, "symbol", "", "six-digit symbol")
+	fs.StringVar(&since, "since", "", "inclusive start date YYYY-MM-DD or YYYYMMDD")
+	fs.StringVar(&until, "until", "", "inclusive end date YYYY-MM-DD or YYYYMMDD")
+	fs.IntVar(&start, "start", 0, "TDX K-line provider start offset")
+	fs.IntVar(&count, "count", tdx.MaxHQKLineCount, "total provider rows to fetch before date filtering")
+	fs.Var(&servers, "server", "TDX HQ server host:port; repeat or comma-separate")
+	registerBestIPFlags(fs, &bestIP)
+	fs.BoolVar(&dryRun, "dry-run", false, "fetch and summarize without writing")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cfg, store, cleanup, ok := loadConfigAndMaybeStore(ctx, overrides, dryRun, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	serverList := []string(servers)
+	if len(serverList) == 0 {
+		serverList = append([]string(nil), cfg.TDX.HQServers...)
+	}
+	clientOpts, err := quoteClientOptions(serverList, cfg.Runtime.BatchSize, "", bestIP)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	summary, err := ingest.ImportHQDailyBars(ctx, ingest.HQDailyImportOptions{
+		Market:        market,
+		Symbol:        symbol,
+		Since:         since,
+		Until:         until,
+		Start:         start,
+		Count:         count,
+		DryRun:        dryRun,
+		Store:         store,
+		Timezone:      cfg.Runtime.Timezone,
+		ClientOptions: clientOpts,
+		FetchBars:     fetchHQSecurityBars,
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	printHQDailySummary(stdout, summary)
+	return 0
+}
+
 func runImportVIPDocZip(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	var overrides config.Overrides
 	var file, periodText, market, since, until string
@@ -2884,6 +2942,26 @@ func printIntradaySummary(out io.Writer, summary ingest.IntradaySummary) {
 	fmt.Fprintf(out, "quality_issues: %d\n", len(summary.Issues))
 }
 
+func printHQDailySummary(out io.Writer, summary ingest.HQDailySummary) {
+	mode := "write"
+	if summary.DryRun {
+		mode = "dry-run"
+	}
+	fmt.Fprintf(out, "mode: %s\n", mode)
+	fmt.Fprintf(out, "run_id: %s\n", summary.RunID)
+	fmt.Fprintf(out, "dataset: %s\n", summary.Dataset)
+	fmt.Fprintf(out, "target_table: %s\n", summary.TargetTable)
+	fmt.Fprintf(out, "market: %s\n", summary.Market)
+	fmt.Fprintf(out, "symbol: %s\n", summary.Symbol)
+	fmt.Fprintf(out, "start: %d\n", summary.Start)
+	fmt.Fprintf(out, "count: %d\n", summary.Count)
+	fmt.Fprintf(out, "pages_fetched: %d\n", summary.PagesFetched)
+	fmt.Fprintf(out, "rows_fetched: %d\n", summary.RowsFetched)
+	fmt.Fprintf(out, "rows_written: %d\n", summary.RowsWritten)
+	fmt.Fprintf(out, "rows_skipped: %d\n", summary.RowsSkipped)
+	fmt.Fprintf(out, "quality_issues: %d\n", len(summary.Issues))
+}
+
 func printBulkSummary(out io.Writer, summary bulkImportSummary) {
 	mode := "write"
 	if summary.DryRun {
@@ -3352,6 +3430,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  import-tdx-1m")
 	fmt.Fprintln(out, "  import-tdx-5m")
 	fmt.Fprintln(out, "  import-tdx-vipdoc-zip")
+	fmt.Fprintln(out, "  import-tdx-hq-day")
 	fmt.Fprintln(out, "  import-tdx-fin")
 	fmt.Fprintln(out, "  import-tdx-gp")
 	fmt.Fprintln(out, "  tdx-fin-files")

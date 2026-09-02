@@ -284,3 +284,98 @@ func TestConsoleBestIPMissingCacheReturnsEmptyResults(t *testing.T) {
 		t.Fatalf("results=%+v", status.Results)
 	}
 }
+
+func TestConsoleImportHQDailyRoute(t *testing.T) {
+	var got ConsoleHQDailyImportRequest
+	importer := func(_ context.Context, req ConsoleHQDailyImportRequest) (ConsoleHQDailyImportSummary, error) {
+		got = req
+		return ConsoleHQDailyImportSummary{
+			RunID:        "run-1",
+			Dataset:      "a_share_bars_1d",
+			TargetTable:  "a_share_bars_1d",
+			Market:       req.Market,
+			Symbol:       req.Symbol,
+			Since:        req.Since,
+			Until:        req.Until,
+			Start:        req.Start,
+			Count:        req.Count,
+			PagesFetched: 1,
+			RowsFetched:  2,
+			RowsWritten:  2,
+			DryRun:       req.DryRun,
+		}, nil
+	}
+	server := httptest.NewServer(NewServer(&fakeRepo{}).WithConsoleHQDailyImporter(importer).Handler())
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/console/imports/tdx-hq-day?market=sh&symbol=600519&since=20260604&until=2026-06-05&start=10&count=2&server=a:7709,b:7709&dry_run=true", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var summary ConsoleHQDailyImportSummary
+	if err := json.NewDecoder(resp.Body).Decode(&summary); err != nil {
+		t.Fatal(err)
+	}
+	if got.Market != "sh" || got.Symbol != "600519" || got.Start != 10 || got.Count != 2 || !got.DryRun || strings.Join(got.Servers, ",") != "a:7709,b:7709" {
+		t.Fatalf("got=%+v", got)
+	}
+	if summary.RowsWritten != 2 || summary.Dataset != "a_share_bars_1d" {
+		t.Fatalf("summary=%+v", summary)
+	}
+}
+
+func TestConsoleImportHQDailyRejectsInvalidRequest(t *testing.T) {
+	called := false
+	importer := func(context.Context, ConsoleHQDailyImportRequest) (ConsoleHQDailyImportSummary, error) {
+		called = true
+		return ConsoleHQDailyImportSummary{}, nil
+	}
+	server := httptest.NewServer(NewServer(&fakeRepo{}).WithConsoleHQDailyImporter(importer).Handler())
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/console/imports/tdx-hq-day?market=sh&symbol=600519&since=2026-06-06&until=2026-06-05", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if called {
+		t.Fatal("importer should not be called")
+	}
+}
+
+func TestTDXProviderBarsDoesNotRunConsoleImporter(t *testing.T) {
+	provider := DefaultTDXProvider()
+	provider.FetchHQSecurityBars = func(_ context.Context, req tdx.HQBarsRequest, _ tdx.QuoteClientOptions) ([]tdx.HQBar, error) {
+		return []tdx.HQBar{{Market: req.Market, Symbol: req.Symbol, Category: req.Category, DateTime: "2026-06-05 00:00", Year: 2026, Month: 6, Day: 5}}, nil
+	}
+	importer := func(context.Context, ConsoleHQDailyImportRequest) (ConsoleHQDailyImportSummary, error) {
+		t.Fatal("importer should not be called")
+		return ConsoleHQDailyImportSummary{}, nil
+	}
+	server := httptest.NewServer(NewServerWithTDXProvider(&fakeRepo{}, provider).WithConsoleHQDailyImporter(importer).Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/tdx/hq/bars?market=sh&symbol=600519&category=9&count=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+}

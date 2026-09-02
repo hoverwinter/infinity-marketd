@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/hoverwinter/infinity-marketd/internal/model"
 	"github.com/hoverwinter/infinity-marketd/internal/tdx"
 )
 
@@ -108,6 +109,37 @@ type ConsoleProbeResult struct {
 type ConsoleQuoteSmokeResult struct {
 	Quotes []tdx.Quote `json:"quotes"`
 }
+
+type ConsoleHQDailyImportRequest struct {
+	Market  string   `json:"market"`
+	Symbol  string   `json:"symbol"`
+	Since   string   `json:"since,omitempty"`
+	Until   string   `json:"until,omitempty"`
+	Start   int      `json:"start"`
+	Count   int      `json:"count"`
+	Servers []string `json:"servers,omitempty"`
+	DryRun  bool     `json:"dry_run"`
+}
+
+type ConsoleHQDailyImportSummary struct {
+	RunID        string               `json:"run_id"`
+	Dataset      string               `json:"dataset"`
+	TargetTable  string               `json:"target_table"`
+	Market       string               `json:"market"`
+	Symbol       string               `json:"symbol"`
+	Since        string               `json:"since,omitempty"`
+	Until        string               `json:"until,omitempty"`
+	Start        int                  `json:"start"`
+	Count        int                  `json:"count"`
+	PagesFetched uint64               `json:"pages_fetched"`
+	RowsFetched  uint64               `json:"rows_fetched"`
+	RowsWritten  uint64               `json:"rows_written"`
+	RowsSkipped  uint64               `json:"rows_skipped"`
+	Issues       []model.QualityIssue `json:"issues"`
+	DryRun       bool                 `json:"dry_run"`
+}
+
+type ConsoleHQDailyImporter func(context.Context, ConsoleHQDailyImportRequest) (ConsoleHQDailyImportSummary, error)
 
 type ConsoleRepository interface {
 	Health(ctx context.Context) error

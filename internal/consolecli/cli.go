@@ -11,6 +11,7 @@ import (
 
 	chstore "github.com/hoverwinter/infinity-marketd/internal/clickhouse"
 	"github.com/hoverwinter/infinity-marketd/internal/config"
+	"github.com/hoverwinter/infinity-marketd/internal/consoleops"
 	"github.com/hoverwinter/infinity-marketd/internal/logging"
 	"github.com/hoverwinter/infinity-marketd/internal/querier"
 	"go.uber.org/zap"
@@ -54,7 +55,7 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return 1
 	}
 	defer store.Close()
-	server := querier.NewServer(store)
+	server := querier.NewServer(store).WithConsoleHQDailyImporter(consoleops.HQDailyImporter(store, cfg))
 	httpServer := &http.Server{
 		Addr:              listen,
 		Handler:           server.HandlerWithConsoleDist(consoleDist),

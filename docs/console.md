@@ -80,10 +80,11 @@ The binary also redirects `/` to `/console/`.
 
 The first console version is intended for local or private operator networks. It has no authentication layer.
 
-The console exposes only read-only operational views plus narrow non-destructive actions:
+The console exposes read-only operational views plus narrow explicit operator actions:
 
 - TDX HQ probe smoke checks
 - TDX HQ quote smoke checks
 - HQ bestip cache refresh
+- immediate online daily K-line import through `/api/console/imports/tdx-hq-day`
 
-The console must not expose actions that drop, truncate, detach, replace, or delete ClickHouse tables or rows. Smoke checks do not write canonical market fact tables, create task runs, or advance watermarks.
+The console must not expose actions that drop, truncate, detach, replace, or delete ClickHouse tables or rows. Smoke checks do not write canonical market fact tables, create task runs, or advance watermarks. The daily import action writes raw bars to `a_share_bars_1d` and records task/watermark metadata, but it does not create scheduled jobs.

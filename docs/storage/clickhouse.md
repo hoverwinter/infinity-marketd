@@ -744,11 +744,19 @@ Minute imports should group by month partition until real 1m/5m volume proves a 
 Offline imports are raw data ingestion only:
 
 ```text
+import-tdx-day -> writes a_share_bars_1d only
 import-tdx-1m -> writes a_share_bars_1m only
 import-tdx-5m -> writes a_share_bars_5m only
 import-tdx-intraday-points -> writes a_share_intraday_points only
 import-tdx-fin -> syncs tdx_financial_item_dictionary, writes a_share_financial_raw_items only
 import-tdx-gp -> syncs tdx_gp_metric_dictionary, writes a_share_gp_metric_values only
+```
+
+Online provider imports are also explicit write-plane operations:
+
+```text
+import-tdx-hq-day -> fetches TDX HQ daily K-line pages and writes a_share_bars_1d only
+POST /api/console/imports/tdx-hq-day -> immediately runs the same single-symbol import from Console
 ```
 
 Scan tables are refreshed separately, for example:
@@ -767,7 +775,7 @@ marketd refresh-tdx-xdxr --market sh --symbol 600519
 marketd refresh-adjust-factors --market sh --symbol 600519
 ```
 
-`import-tdx-day`, `import-tdx-1m`, and `import-tdx-5m` do not fetch xdxr events and do not refresh qfq/hfq factors as hidden side effects.
+`import-tdx-day`, `import-tdx-hq-day`, `import-tdx-1m`, and `import-tdx-5m` do not fetch xdxr events and do not refresh qfq/hfq factors as hidden side effects.
 
 Financial wide tables follow the same explicit refresh rule. `import-tdx-fin` and `import-tdx-gp` do not generate wide financial snapshots, factors, or scan tables as hidden side effects.
 

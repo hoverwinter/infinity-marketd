@@ -12,6 +12,7 @@ import (
 
 	chstore "github.com/hoverwinter/infinity-marketd/internal/clickhouse"
 	"github.com/hoverwinter/infinity-marketd/internal/config"
+	"github.com/hoverwinter/infinity-marketd/internal/consoleops"
 	"github.com/hoverwinter/infinity-marketd/internal/logging"
 	"github.com/hoverwinter/infinity-marketd/internal/querier"
 	"github.com/hoverwinter/infinity-marketd/internal/securitymaster"
@@ -106,7 +107,7 @@ func runQuerierServe(ctx context.Context, args []string, stdout io.Writer, stder
 	if closeSecurities != nil {
 		defer closeSecurities()
 	}
-	server := querier.NewServerWithSecurities(store, securitiesRepo)
+	server := querier.NewServerWithSecurities(store, securitiesRepo).WithConsoleHQDailyImporter(consoleops.HQDailyImporter(store, cfg))
 	httpServer := &http.Server{
 		Addr:              listen,
 		Handler:           server.HandlerWithConsoleDist(consoleDist),

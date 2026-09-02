@@ -13,9 +13,10 @@ import (
 )
 
 type Server struct {
-	repo           Repository
-	securitiesRepo securitymaster.Reader
-	tdxProvider    *TDXProvider
+	repo                   Repository
+	securitiesRepo         securitymaster.Reader
+	tdxProvider            *TDXProvider
+	consoleHQDailyImporter ConsoleHQDailyImporter
 }
 
 func NewServer(repo Repository) *Server {
@@ -38,6 +39,11 @@ func NewServerWithSecuritiesAndTDXProvider(repo Repository, securitiesRepo secur
 		securitiesRepo = securitymaster.NewUnavailableReader(fmt.Errorf("mysql is not configured"))
 	}
 	return &Server{repo: repo, securitiesRepo: securitiesRepo, tdxProvider: provider}
+}
+
+func (s *Server) WithConsoleHQDailyImporter(importer ConsoleHQDailyImporter) *Server {
+	s.consoleHQDailyImporter = importer
+	return s
 }
 
 func (s *Server) Handler() http.Handler {

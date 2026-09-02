@@ -116,6 +116,35 @@ export type ConsoleSummary = {
   quote_service_runs: QuoteServiceRun[];
 };
 
+export type HQDailyImportRequest = {
+  market: string;
+  symbol: string;
+  since?: string;
+  until?: string;
+  start?: number;
+  count?: number;
+  servers?: string;
+  dryRun?: boolean;
+};
+
+export type HQDailyImportSummary = {
+  run_id: string;
+  dataset: string;
+  target_table: string;
+  market: string;
+  symbol: string;
+  since?: string;
+  until?: string;
+  start: number;
+  count: number;
+  pages_fetched: number;
+  rows_fetched: number;
+  rows_written: number;
+  rows_skipped: number;
+  issues: DataQualityIssue[];
+  dry_run: boolean;
+};
+
 type WireQuoteServiceRun = Omit<QuoteServiceRun, "markets"> & { markets: string[] | null };
 type WireBestIPStatus = Omit<BestIPStatus, "results"> & { results: ProbeResult[] | null };
 type WireConsoleSummary = Omit<ConsoleSummary, "watermarks" | "task_runs" | "data_quality_issue_counts" | "quote_service_runs"> & {
@@ -173,6 +202,16 @@ function normalizeBestIP(status: WireBestIPStatus): BestIPStatus {
   return { ...status, results: asArray(status.results) };
 }
 
+function paramsFrom(values: Record<string, string | number | undefined>) {
+  const params = new URLSearchParams();
+  Object.entries(values).forEach(([key, value]) => {
+    if (value === undefined) return;
+    const text = String(value).trim();
+    if (text) params.set(key, text);
+  });
+  return params.toString();
+}
+
 export const api = {
   summary: (limit = 20) => getJSON<WireConsoleSummary>(`/api/console/summary?limit=${limit}`).then(normalizeSummary),
   watermarks: (limit = 50) => getJSON<Watermark[] | null>(`/api/console/watermarks?limit=${limit}`).then(asArray),
@@ -201,5 +240,18 @@ export const api = {
       ...payload,
       quotes: asArray(payload.quotes)
     }));
-  }
+  },
+  importHQDaily: (request: HQDailyImportRequest) =>
+    postJSON<HQDailyImportSummary>(
+      `/api/console/imports/tdx-hq-day?${paramsFrom({
+        market: request.market,
+        symbol: request.symbol,
+        since: request.since,
+        until: request.until,
+        start: request.start,
+        count: request.count,
+        server: request.servers,
+        dry_run: request.dryRun ? "true" : undefined
+      })}`
+    ).then((summary) => ({ ...summary, issues: asArray(summary.issues) }))
 };

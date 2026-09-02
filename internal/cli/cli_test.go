@@ -947,6 +947,60 @@ func TestImportTDXIntradayPointsDryRun(t *testing.T) {
 	}
 }
 
+func TestImportTDXHQDayDryRun(t *testing.T) {
+	orig := fetchHQSecurityBars
+	defer func() { fetchHQSecurityBars = orig }()
+
+	var gotServers []string
+	fetchHQSecurityBars = func(_ context.Context, req tdx.HQBarsRequest, opts tdx.QuoteClientOptions) ([]tdx.HQBar, error) {
+		if req.Market != "sh" || req.Symbol != "600519" || req.Category != tdx.HQKLineDayAlt || req.Start != 0 || req.Count != 2 {
+			t.Fatalf("req=%+v", req)
+		}
+		gotServers = append([]string(nil), opts.Servers...)
+		return []tdx.HQBar{
+			{Market: req.Market, Symbol: req.Symbol, Category: req.Category, DateTime: "2026-06-04 00:00", Year: 2026, Month: 6, Day: 4, Open: 10, High: 11, Low: 9, Close: 10.5, Volume: 100, Amount: 1000},
+			{Market: req.Market, Symbol: req.Symbol, Category: req.Category, DateTime: "2026-06-05 00:00", Year: 2026, Month: 6, Day: 5, Open: 11, High: 12, Low: 10, Close: 11.5, Volume: 200, Amount: 2000},
+		}, nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"import-tdx-hq-day", "--market", "sh", "--symbol", "600519", "--since", "2026-06-05", "--count", "2", "--server", "127.0.0.1:7709", "--dry-run"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	for _, want := range []string{"mode: dry-run", "dataset: a_share_bars_1d", "target_table: a_share_bars_1d", "pages_fetched: 1", "rows_fetched: 2", "rows_written: 1", "rows_skipped: 1", "quality_issues: 0"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Join(gotServers, ",") != "127.0.0.1:7709" {
+		t.Fatalf("servers=%v", gotServers)
+	}
+}
+
+func TestImportTDXHQDayRejectsInvalidRequest(t *testing.T) {
+	orig := fetchHQSecurityBars
+	defer func() { fetchHQSecurityBars = orig }()
+	fetchHQSecurityBars = func(context.Context, tdx.HQBarsRequest, tdx.QuoteClientOptions) ([]tdx.HQBar, error) {
+		t.Fatal("fetch should not be called")
+		return nil, nil
+	}
+
+	tests := [][]string{
+		{"import-tdx-hq-day", "--market", "sh", "--dry-run"},
+		{"import-tdx-hq-day", "--market", "sh", "--symbol", "600519", "--since", "2026-06-06", "--until", "2026-06-05", "--dry-run"},
+	}
+	for _, args := range tests {
+		var out bytes.Buffer
+		var errOut bytes.Buffer
+		code := Run(context.Background(), args, &out, &errOut)
+		if code != 2 {
+			t.Fatalf("%v exit %d stderr=%s stdout=%s", args, code, errOut.String(), out.String())
+		}
+	}
+}
+
 func TestImportTDXIntradayPointsRejectsMissingDateSelection(t *testing.T) {
 	origHistoryMinute := fetchHQHistoryMinuteTime
 	defer func() { fetchHQHistoryMinuteTime = origHistoryMinute }()

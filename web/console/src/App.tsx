@@ -7,6 +7,7 @@ import {
   Database,
   Gauge,
   Network,
+  Play,
   RefreshCw,
   Search,
   Server,
@@ -17,6 +18,7 @@ import {
   BestIPStatus,
   ConsoleSummary,
   DataQualityIssue,
+  HQDailyImportSummary,
   ProbeResult,
   Quote,
   QuoteServiceRun,
@@ -114,7 +116,7 @@ export default function App() {
         </header>
         <div className="freshness">{staleText}</div>
         {active === "overview" && <Overview state={summary} />}
-        {active === "ops" && <Ops watermarks={watermarks} taskRuns={taskRuns} issues={issues} />}
+        {active === "ops" && <Ops watermarks={watermarks} taskRuns={taskRuns} issues={issues} onAfterImport={refreshAll} />}
         {active === "realtime" && <Realtime quoteRuns={quoteRuns} summary={summary} />}
         {active === "bestip" && <BestIP state={bestip} reload={() => loadState(setBestip, () => api.bestip())} />}
         {active === "smoke" && <Smoke />}
@@ -169,14 +171,19 @@ function Overview({ state }: { state: Loadable<ConsoleSummary> }) {
 function Ops({
   watermarks,
   taskRuns,
-  issues
+  issues,
+  onAfterImport
 }: {
   watermarks: Loadable<Watermark[]>;
   taskRuns: Loadable<TaskRun[]>;
   issues: Loadable<DataQualityIssue[]>;
+  onAfterImport: () => Promise<void>;
 }) {
   return (
     <section className="view-stack">
+      <Panel title="Online daily import" icon={Play}>
+        <HQDailyImportForm onAfterImport={onAfterImport} />
+      </Panel>
       <Panel title="Watermarks" icon={Database}>
         <LoadableTable state={watermarks} render={(rows) => <WatermarkTable rows={rows} />} />
       </Panel>
@@ -187,6 +194,100 @@ function Ops({
         <LoadableTable state={issues} render={(rows) => <IssueTable rows={rows} />} />
       </Panel>
     </section>
+  );
+}
+
+function HQDailyImportForm({ onAfterImport }: { onAfterImport: () => Promise<void> }) {
+  const [market, setMarket] = useState("sh");
+  const [symbol, setSymbol] = useState("600519");
+  const [since, setSince] = useState("");
+  const [until, setUntil] = useState("");
+  const [start, setStart] = useState("0");
+  const [count, setCount] = useState("800");
+  const [servers, setServers] = useState("");
+  const [dryRun, setDryRun] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<HQDailyImportSummary | null>(null);
+
+  const submit = async () => {
+    setSubmitting(true);
+    setError("");
+    try {
+      const summary = await api.importHQDaily({
+        market,
+        symbol,
+        since,
+        until,
+        start: Number(start || 0),
+        count: Number(count || 0),
+        servers,
+        dryRun
+      });
+      setResult(summary);
+      if (!summary.dry_run) await onAfterImport();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Import failed");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="online-import">
+      <div className="import-form">
+        <label className="import-field">
+          <span>Market</span>
+          <div className="market-toggle">
+            {["sh", "sz", "bj"].map((item) => (
+              <button className={market === item ? "active" : ""} key={item} type="button" onClick={() => setMarket(item)}>
+                {item}
+              </button>
+            ))}
+          </div>
+        </label>
+        <label className="import-field">
+          <span>Symbol</span>
+          <input value={symbol} onChange={(event) => setSymbol(event.target.value)} />
+        </label>
+        <label className="import-field">
+          <span>Since</span>
+          <input type="date" value={since} onChange={(event) => setSince(event.target.value)} />
+        </label>
+        <label className="import-field">
+          <span>Until</span>
+          <input type="date" value={until} onChange={(event) => setUntil(event.target.value)} />
+        </label>
+        <label className="import-field">
+          <span>Start</span>
+          <input type="number" min="0" value={start} onChange={(event) => setStart(event.target.value)} />
+        </label>
+        <label className="import-field">
+          <span>Count</span>
+          <input type="number" min="1" max="51200" value={count} onChange={(event) => setCount(event.target.value)} />
+        </label>
+        <label className="import-field server-field">
+          <span>Servers</span>
+          <input value={servers} onChange={(event) => setServers(event.target.value)} placeholder="host:7709,host:7709" />
+        </label>
+        <label className="dry-run-toggle">
+          <input type="checkbox" checked={dryRun} onChange={(event) => setDryRun(event.target.checked)} />
+          <span>Dry run</span>
+        </label>
+        <button className="primary-button" type="button" onClick={() => void submit()} disabled={submitting}>
+          <Play size={17} />
+          <span>{submitting ? "Running" : dryRun ? "Preview" : "Import"}</span>
+        </button>
+      </div>
+      {error && <p className="inline-error">{error}</p>}
+      {result && (
+        <div className="metrics-grid compact import-result">
+          <Metric label={result.dry_run ? "Would write" : "Rows written"} value={result.rows_written.toLocaleString()} sub={`${result.rows_fetched.toLocaleString()} fetched`} icon={Database} />
+          <Metric label="Pages" value={result.pages_fetched.toString()} sub={`${result.rows_skipped.toLocaleString()} skipped`} icon={BarChart3} />
+          <Metric label="Issues" value={result.issues.length.toString()} sub={result.dry_run ? "dry run" : shortID(result.run_id)} icon={AlertTriangle} />
+        </div>
+      )}
+    </div>
   );
 }
 

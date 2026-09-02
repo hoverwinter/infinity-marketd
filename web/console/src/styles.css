@@ -336,6 +336,71 @@ tbody tr:hover {
   gap: 12px;
 }
 
+.online-import {
+  display: grid;
+  gap: 12px;
+}
+
+.import-form {
+  display: grid;
+  grid-template-columns: 132px minmax(110px, 1fr) repeat(4, minmax(116px, 1fr)) minmax(190px, 1.4fr) 96px auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.import-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: #626a5d;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.market-toggle {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-height: 38px;
+  border: 1px solid #c9d0c3;
+}
+
+.market-toggle button {
+  border: 0;
+  color: #626a5d;
+  background: #ffffff;
+  text-transform: uppercase;
+}
+
+.market-toggle button.active {
+  color: #172015;
+  background: #c7ff87;
+}
+
+.dry-run-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid #c9d0c3;
+  color: #626a5d;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.dry-run-toggle input {
+  width: 16px;
+  min-height: 16px;
+  accent-color: #20251f;
+}
+
+.import-result {
+  margin-top: 2px;
+}
+
 .form-row label {
   display: grid;
   gap: 6px;
@@ -444,6 +509,11 @@ input:focus {
   }
 
   .form-row {
+    grid-template-columns: 1fr;
+  }
+
+  .import-form,
+  .import-result {
     grid-template-columns: 1fr;
   }
 }
