@@ -151,7 +151,7 @@ GET /api/v1/health
 {
   "status": "ok",
   "version": "0.1.0",
-  "schema_version": "2026-06-10"
+  "schema_version": "2026-09-05"
 }
 ```
 
@@ -597,6 +597,186 @@ HTTP/1.1 400 Bad Request
 }
 ```
 
+## 每日复盘 API
+
+以下接口由 ClickHouse 提供，只读，不读取旧 JSON、不临时调用 THS/TDX。
+`schema_version` 为 `2026-09-05`。表定义见 [ClickHouse](../storage/clickhouse.md#a-股复盘表约定)，迁移入口见 [设计与迁移](../design/ashare-limit-review-data-layer.md)。
+
+### 列表接口
+
+| 路径 | 内容 | 可选业务过滤 |
+| --- | --- | --- |
+| `/api/v1/limit-events` | 涨停、炸板、跌停单股事件 | market、symbol、event_type、theme |
+| `/api/v1/limit-summary` | 每日摘要 | 无 |
+| `/api/v1/limit-relay` | 前日事件样本的当日表现 | market、symbol、sample_group、theme、prev_trade_date |
+| `/api/v1/limit-themes` | 题材日聚合 | theme |
+| `/api/v1/limit-performance-indices` | 专用表现指数 OHLCV | index_code |
+| `/api/v1/market-breadth` | 涨跌家数及强涨强跌累计计数 | 无 |
+
+所有列表使用 GET，日期参数二选一：
+
+- `trade_date=YYYY-MM-DD`：单日。
+- `since=YYYY-MM-DD&until=YYYY-MM-DD`：闭区间，两个参数必须同时提供。
+- 日期范围不能和 `trade_date` 混用。
+- `limit` 默认 1000，允许 1..20000；`offset` 默认 0，允许 0..1000000。
+- 单股查询必须同时给 `market=sh|sz|bj` 和六位 `symbol`。
+- `event_type=limit_up|open_limit|limit_down`。
+- `sample_group=prev_limit_up|prev_ladder|prev_broken|prev_limit_down`。
+- `prev_trade_date` 只接受在单日 relay 请求中使用，必须早于 `trade_date`。未提供时取当日摘要中的上一交易日，不会简单减一个自然日。
+- `theme` 在事件查询中匹配主题材或 theme_tags；在 relay 中只匹配前日主题材。
+- `index_code=prev_limit_up_perf|prev_non_st_limit_up_perf|prev_ladder_perf|prev_limit_down_perf`，未指定则返回全部已保存指数。
+
+日期错误、倒置区间、非法枚举、不适用的业务过滤参数、显式 limit=0 等返回 HTTP 400，错误体为 `{"error":"..."}`。数据库错误返回 HTTP 500。
+
+列表响应统一为：
+
+```json
+{
+  "query": {"trade_date": "2026-09-04", "event_type": "limit_up", "limit": 1000, "offset": 0},
+  "rows": [],
+  "has_more": false
+}
+```
+
+有 `has_more=true` 时按实际返回行数推进 offset。所有结果有确定排序；订正或新导入期间不是跨请求一致性快照，上层批量导出应避开同时写入。没有记录返回空数组，不代表该日确认为零。
+
+事件行字段：
+
+```json
+{
+  "trade_date": "2026-09-04",
+  "market": "sz",
+  "symbol": "000001",
+  "event_type": "limit_up",
+  "close_status": "sealed",
+  "board_count": 2,
+  "reason_text": "示例归因",
+  "theme_primary": "示例题材",
+  "theme_tags": ["示例题材"],
+  "first_limit_minute": "09:35",
+  "last_limit_minute": null,
+  "open_count": null,
+  "seal_order_amount": null,
+  "amount": null,
+  "turnover_rate": null,
+  "market_value": null
+}
+```
+
+上述为字段示例，不是真实股票当日数据。事件不返回名称、latest 或 pct_chg；名称使用证券主数据，股价使用 bars。专用表现指数返回 OHLCV，未附加涨幅；展示时按该指数前一交易日 close 计算，不能用个股均值替代。获取一个区间的首日涨幅时，需额外取得前一交易日指数收盘值。
+
+### 订正与派生查询边界
+
+- 事件查询通过 FINAL 读取同键最终值。对 event_type 的修改是另一个逻辑键，不会自动删除原事件。
+- 摘要查询会重算已存在摘要日期的基本池计数、板数分布和封板成功率；其余摘要指标仍为导入值。仅补事件不自动创建摘要。
+- 单日与区间题材查询在有事件的日期按最终事件主题材重算；无事件日期回退已导入聚合。排名逐日重算后再筛选/分页，不跨日累计排名。
+- 单日与区间 relay 在能确定上一交易日且前日有事件时重建四组样本，用当日事件确定状态、用 `a_share_daily_derived.pct_chg` 补涨幅；已保存的 relay 作为结果补源。前日日期来自摘要或已存 relay；显式 prev_trade_date 只用于单日请求。缺前日日期/事件时只返回已保存 relay。部分补录仍是部分样本，不能视为全市场完整池。
+- relay/题材范围最长 93 个自然日（含首尾），超出返回 400；先完整重建后筛选和分页。每类输入最多读取 200000 行，超限报错，不静默丢行。十年研究按时间分段。查询重建不会重新写入物化表。
+- 摘要 `big_noodle_count/high_level_break_count/strong_theme_count` 为可空计数；新在线采集未计算这些统计时返回 null，只有明确已知零才是 0。其余尚未重算指标继续使用导入值。
+- Relay `today_status`：promoted=板数晋级，sealed=涨停但未判定晋级，broken=未封板，open_limit=炸板，limit_down=跌停，suspended=输入明确停牌，unknown=未知。旧“平板”映射 sealed，不等于涨跌幅 0。
+- `today_pct_chg` 为百分数，10% 返回 10；unknown/NULL 不自动当作零收益或停牌。数值单位与成功率的 0..1 不同。
+
+### 常用请求
+
+```bash
+# 一天涨停股票
+curl 'http://127.0.0.1:8808/api/v1/limit-events?trade_date=2026-09-04&event_type=limit_up'
+
+# 前一交易日跌停样本在周一的表现（prev_trade_date 为周五）
+curl 'http://127.0.0.1:8808/api/v1/limit-relay?trade_date=2026-09-07&prev_trade_date=2026-09-04&sample_group=prev_limit_down'
+
+# 单股历史涨停日期、板数、原因
+curl 'http://127.0.0.1:8808/api/v1/limit-events?market=sz&symbol=000001&event_type=limit_up&since=2016-01-01&until=2026-09-04'
+
+# 软件定义的昨日非 ST 涨停表现指数
+curl 'http://127.0.0.1:8808/api/v1/limit-performance-indices?index_code=prev_non_st_limit_up_perf&since=2026-08-01&until=2026-09-04'
+
+# 市场宽度
+curl 'http://127.0.0.1:8808/api/v1/market-breadth?trade_date=2026-09-04'
+```
+
+### GET /api/v1/limit-review
+
+必填 `trade_date`，只重建一天，不使用客户端分页参数裁剪复盘内容：
+
+```bash
+curl 'http://127.0.0.1:8808/api/v1/limit-review?trade_date=2026-09-04'
+```
+
+```json
+{
+  "trade_date": "2026-09-04",
+  "summary": null,
+  "market_breadth": null,
+  "performance_indices": [],
+  "limit_up_pool": [],
+  "broken": [],
+  "limit_down": [],
+  "ladder": [],
+  "relay": [],
+  "theme_overview": [],
+  "warnings": [
+    "summary_missing",
+    "market_breadth_missing",
+    "performance_indices_missing",
+    "relay_missing",
+    "events_missing"
+  ]
+}
+```
+
+有数据时，各字段使用列表接口的行结构；ladder 为 `[{"height":3,"stocks":[事件行]}]`，高度降序。摘要/宽度缺失返回 null，其他集合为空数组，不编造情绪结论、截图、盘中走势或主观备注。题材为空时无额外 warning。部分指数缺失时数组只包含已有记录，不保证四种齐全。
+
+每个集合最多重建 20000 行，超过返回错误，不静默截断。摘要与事件数不符时可出现 `summary_event_count_mismatch`；宽度中已知涨跌停计数与摘要不符时出现 `breadth_limit_count_mismatch`，不自动覆盖双方口径。接口多次读取不是跨表事务快照。
+
+`/api/v1` 保持只读。补录走下述显式启用的 console 写操作，没有新增 infinity CLI 查询子命令。Go HTTPClient 提供 LimitEvents、LimitReview 和 LimitReviewMatrix 方法；其他接口可直接走 HTTP。
+
+### GET /api/v1/limit-review-matrix
+
+历史摘要中的 NULL 封板率保留为未知，不因未记录炸板就计算为 100%。各项计数表示已保存事件的数量；部分历史回放的零炸板不代表真实全市场零炸板，覆盖边界见 `docs/design/ashare-limit-review-migration-20260905.md`。
+
+```bash
+curl 'http://127.0.0.1:8808/api/v1/limit-review-matrix?since=2026-08-01&until=2026-09-04&limit=100&offset=0'
+```
+
+接受 `trade_date` 或 `since/until`，最长 93 个自然日；可按 market/symbol、theme、event_type 选择股票。limit 默认 100、最大 500，offset 是股票偏移。行按 market/symbol 排序，不按名称排序。
+
+- `query`：归一后的请求。
+- `days`：日期升序，每项含 trade_date、summary、market_breadth、performance_indices、themes。
+- `rows`：每项为 market、symbol、cells；每个 cell 含 trade_date、events、relay，日期升序。
+- `total_rows/has_more`：符合选股条件的总股票数和是否有下一页。
+- `warnings`：缺失信息提示。
+
+筛选只决定哪些股票入选，不裁掉其其他日期/题材/事件，所以可以选择区间涨停股，同时看到它之后的跌停。未指定 event_type 时也可从 relay 样本入选。单元格允许同日多个事件和多个样本组，不随意选其中一个。每类数据最多完整加载 200000 行，超限或分页不完整时报错。
+
+`days` 只包含有记录的日期，不宣称是完整交易日历；没有 cell 表示缺记录，不等于未涨停/停牌/收益为零。`missing_cells_are_unknown` 和 `dates_only_include_available_records` 明确这一边界。每个已知日期缺摘要/宽度/全部指数时另有日期前缀 warning；指数数组仍不保证四类齐全。价格、K 线和分时图继续使用 bars API，名称和笔记来自上层，接口不提供生成的图片或主观情绪结论。读取不是跨表事务快照。
+
+### POST /api/console/imports/limit-review-corrections
+
+由现有 `infinity-console` 注入写操作，普通 `infinity querier serve` 不注册此端点。启动 console 前通过进程环境设置非空 `INFINITY_REVIEW_WRITE_TOKEN`；未设置则端点不存在。不把令牌放入前端、URL、仓库或日志。console 默认仅监听 `127.0.0.1:8809`；远程调用必须有 TLS 和受控网络边界。
+
+```bash
+# 令牌由部署环境注入，console-dist 必须已构建。
+go run ./cmd/infinity-console --config configs/config.yaml --listen 127.0.0.1:8809
+```
+
+请求是**单个 JSON 对象**，字段与 `import-limit-review-corrections` 的一行 JSONL 相同。必须携带 `Authorization: Bearer <token>` 和 `Content-Type: application/json`。拒绝 Origin 请求头，供工作台后端/解析任务调用，不供浏览器直连。
+
+```bash
+# 默认预览：不写市场表或 ops；correction.json 由工作台导出。
+curl --fail-with-body 'http://127.0.0.1:8809/api/console/imports/limit-review-corrections' \
+  -H "Authorization: Bearer $INFINITY_REVIEW_WRITE_TOKEN" \
+  -H 'Content-Type: application/json' --data-binary @correction.json
+# 确认预览后，同一请求加 ?dry_run=false 才正式执行。
+```
+
+- 只允许 `dry_run=true|false`，默认 true；不接受其他或重复参数。请求上限 4 MiB，执行超时 30 秒，同一 console 进程串行执行补录；并发请求返回 409 和 Retry-After。CLI、其他进程和在线采集仍由部署方串行调度。
+- HTTP 只接受 `mode: "enrich_existing"`，仍提交完整事件行。Go 在预览和写入前读取当前行，只允许补空 `reason_text` 或空/`未分类` 的 `theme_primary`；现有非空归因、事件键、状态、连板、金额、时间、tags 等必须保持一致，缺行或读取失败整批拒绝。遗漏已存可选值也会被拒绝，不会默默清空。
+- 操作员确需订正核心事实时，CLI 使用 `mode: "upsert"` 并显式加 `--allow-fact-replacement`，该危险能力不向材料 HTTP 端点开放。更改 event_type 仍产生新键，不删除原键。CLI 默认通过 `--read-url http://127.0.0.1:8808` 读取当前行，不直接查询 ClickHouse。
+- 成功返回 `run_id/events/rows_written/rows_skipped/issues/dry_run`。401 鉴权失败，403 浏览器来源请求，400 contract 校验失败，413 超限，415 媒体类型错误；执行失败返回对应错误和可用的 `result`，包括已创建的 run_id。
+- 写入无事务、没有恰好一次保证。连接中断/超时不代表没写入，先通过事件查询与任务记录核对，再串行重试完整同一批。不要让 HTTP 客户端自动重试正式 POST，也不要用旧快照覆盖已确认订正。
+- 不新增补录表。reason/audit_ref 只进入现有 task_runs.params；预览不会产生任务记录。非 ST 指数和宽度补数继续用已实现 JSON 导入命令，不属于这个事件写接口。
+
 ## CLI Mapping
 
 `infinity querier` CLI 是 HTTP API 客户端，不直接连接 ClickHouse。
@@ -666,4 +846,4 @@ GET /api/v1/resolve-symbol?symbol=600519
 - API 调用方不应解析服务端日志作为数据接口。
 - `/api/v1/bars` 是当前稳定查询入口。
 - `/api/v1/resolve-symbol` 是当前稳定市场推导入口。
-- 后续管控控制台接口应继续放在 `/api/v1` 下，按资源拆分路径。
+- 市场查询接口放在 `/api/v1`；显式写操作放在 `/api/console/imports`，不要混入只读市场查询契约。

@@ -601,6 +601,170 @@ Logical key:
 ex_market + code + trade_date
 ```
 
+### A 股复盘表约定
+
+以下六表随既有 `marketd bootstrap` 增量创建，均按年分区、以逻辑键使用 `ReplacingMergeTree`，无来源、版本、更新时间列。读路径使用 `FINAL`；同键订正为整行替换，不是局部字段补丁。写入端必须串行处理同键冲突，不能让不同输入并发争抢“最终值”。跨表写入没有事务，失败后按原批次重试并对账，不通过删表回滚。
+
+完整迁移和上层切换流程见 [复盘数据设计](../design/ashare-limit-review-data-layer.md)，接口见 [API](../api/README.md#每日复盘-api)。
+
+### infinity_market.a_share_limit_events
+
+单日单股的涨停、炸板、跌停最终事件。`event_type` 为 `limit_up/open_limit/limit_down`，`close_status` 为 `sealed/broken/broken_reseal/limit_down`。同一股票同一天可以同时有炸板过程和收盘涨停事件。金额单位为元，换手率为百分数，封板时间为上海时间 `HH:MM`；未知盘口字段为 NULL。名称查询证券主数据；事件表不保存 `pct_chg` 或 `latest`，行情仍由已有日线/派生表提供。
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_limit_events
+(
+    trade_date Date,
+    market LowCardinality(String),
+    symbol String,
+    event_type LowCardinality(String),
+    close_status LowCardinality(String),
+    board_count UInt16,
+    reason_text String,
+    theme_primary LowCardinality(String),
+    theme_tags Array(String),
+    first_limit_minute Nullable(String),
+    last_limit_minute Nullable(String),
+    open_count Nullable(UInt16),
+    seal_order_amount Nullable(Float64),
+    amount Nullable(Float64),
+    turnover_rate Nullable(Float64),
+    market_value Nullable(Float64)
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(trade_date)
+ORDER BY (trade_date, event_type, market, symbol);
+```
+
+### infinity_market.a_share_limit_daily_summary
+
+导入时保存快照汇总和上一交易日。属于派生摘要，不是事实池的替代品。查询存在事件的日期时，基本池计数、板数分布和封板成功率按最终事件重新聚合；晋级率、大面数、高位断板数、强主题数仍为导入的摘要值，不会随单条订正自动重算。比率字段取值 0..1。仅有事件补录、没有整日摘要时，该表不会自动新增摘要行。
+
+大面数、高位断板数、强主题数未获取时为 NULL，已知为零才写 0。按早期草案建成 UInt32 的库需人工核对迁移，bootstrap 不自动改已有列类型。
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_limit_daily_summary
+(
+    trade_date Date,
+    prev_trade_date Nullable(Date),
+    limit_up_count UInt32,
+    limit_down_count UInt32,
+    open_limit_count UInt32,
+    seal_success_rate Nullable(Float64),
+    max_board_height UInt16,
+    first_board_count UInt32,
+    continuous_board_count UInt32,
+    prev_limit_up_promotion_rate Nullable(Float64),
+    prev_ladder_promotion_rate Nullable(Float64),
+    big_noodle_count Nullable(UInt32),
+    high_level_break_count Nullable(UInt32),
+    strong_theme_count Nullable(UInt32),
+    two_board_count UInt32,
+    three_board_count UInt32,
+    four_board_count UInt32,
+    five_plus_board_count UInt32
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(trade_date)
+ORDER BY (trade_date);
+```
+
+### infinity_market.a_share_limit_relay_events
+
+接力派生明细。`sample_group` 为 `prev_limit_up/prev_ladder/prev_broken/prev_limit_down`；`today_status` 为 `promoted/sealed/broken/open_limit/limit_down/suspended/unknown`。`sealed` 包括旧 JSON 的“平板”（仍涨停但板数未增加），不代表零涨幅。`today_pct_chg` 单位为百分数，10% 写 10。缺行情不是停牌，保留 NULL/unknown。单日和最多 93 个自然日的范围查询可从前日最终事件和当日日线派生值重建；没有前日日期/事件时回退本表，见 API 限制。
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_limit_relay_events
+(
+    trade_date Date,
+    prev_trade_date Date,
+    market LowCardinality(String),
+    symbol String,
+    sample_group LowCardinality(String),
+    prev_board_count UInt16,
+    prev_reason_text String,
+    prev_theme_primary LowCardinality(String),
+    prev_first_limit_minute Nullable(String),
+    today_status LowCardinality(String),
+    today_board_count UInt16,
+    today_pct_chg Nullable(Float64)
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(trade_date)
+ORDER BY (trade_date, sample_group, market, symbol);
+```
+
+### infinity_market.a_share_limit_performance_index_bars_1d
+
+专用表现指数的原始 OHLCV，不是涨停池个股均值。语义代码为 `prev_limit_up_perf/prev_non_st_limit_up_perf/prev_ladder_perf/prev_limit_down_perf`。原始供应商代码由适配器确定，不落事实表。支持规范 JSON 和 TDX 专用指数导入：涨停 880863、连板 880812、跌停 880751，每次核对目录名称；非 ST 映射未验证，不启用在线采集。同一个语义代码不可混写不同供应商、不同编制口径或不同基点的价格序列。成交量为手、成交额为元；上层须额外读取前收才能计算首日涨幅。
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_limit_performance_index_bars_1d
+(
+    index_code LowCardinality(String),
+    trade_date Date,
+    open Float64,
+    high Float64,
+    low Float64,
+    close Float64,
+    volume Nullable(UInt64),
+    amount Nullable(Float64)
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(trade_date)
+ORDER BY (index_code, trade_date);
+```
+
+### infinity_market.a_share_market_breadth_daily
+
+市场宽度计数。up/down/total 为必填；其余未获取的字段为 NULL，不伪造为零。`up_gt_7_count` 指涨幅严格大于 7%，`down_gt_7_count` 指跌幅绝对值严格大于 7%（收益率小于 -7%）；3/5/7 为累计阈值，不是互斥区间。导入检查计数上界与阈值嵌套。flat 与 unchanged_or_suspended 必须是互斥口径，不能重复计数。TDX 880005 原始字段语义尚未确认，当前不自动映射写入。
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_market_breadth_daily
+(
+    trade_date Date,
+    up_count UInt32,
+    down_count UInt32,
+    flat_count Nullable(UInt32),
+    unchanged_or_suspended_count Nullable(UInt32),
+    up_gt_3_count Nullable(UInt32),
+    up_gt_5_count Nullable(UInt32),
+    up_gt_7_count Nullable(UInt32),
+    down_gt_3_count Nullable(UInt32),
+    down_gt_5_count Nullable(UInt32),
+    down_gt_7_count Nullable(UInt32),
+    limit_up_count Nullable(UInt32),
+    limit_down_count Nullable(UInt32),
+    total_count UInt32
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(trade_date)
+ORDER BY (trade_date);
+```
+
+### infinity_market.a_share_limit_theme_daily
+
+导入的题材日聚合，属于派生数据。主键不包含排名：订正排名不能产生第二条同日同题材逻辑记录。单日及最多 93 自然日的范围 API 优先由最终事件的主题材重算；某日没有事件才回退此表。查询时的排名逐日按涨停数、连板数降序及题材名升序；龙头按板数最高、代码字典序最小选择，不代表人工选龙头。
+
+```sql
+CREATE TABLE IF NOT EXISTS infinity_market.a_share_limit_theme_daily
+(
+    trade_date Date,
+    theme_name LowCardinality(String),
+    limit_up_count UInt32,
+    ladder_count UInt32,
+    broken_count UInt32,
+    limit_down_count UInt32,
+    leader_market LowCardinality(String),
+    leader_symbol String,
+    leader_board_count UInt16,
+    strength_rank UInt16
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(trade_date)
+ORDER BY (trade_date, theme_name);
+```
+
 ### infinity_ops.watermarks
 
 Latest import status for each dataset asset.

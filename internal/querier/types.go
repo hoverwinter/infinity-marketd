@@ -7,7 +7,7 @@ import (
 
 const (
 	Version       = "0.1.0"
-	SchemaVersion = "2026-06-10"
+	SchemaVersion = "2026-09-05"
 )
 
 type Health struct {
@@ -75,6 +75,7 @@ type SymbolResolution struct {
 }
 
 type Repository interface {
+	LimitReviewRepository
 	ConsoleRepository
 	Health(ctx context.Context) error
 	Bars(ctx context.Context, query BarQuery) (BarResult, error)

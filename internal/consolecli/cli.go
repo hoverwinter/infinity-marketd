@@ -56,6 +56,9 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 	}
 	defer store.Close()
 	server := querier.NewServer(store).WithConsoleHQDailyImporter(consoleops.HQDailyImporter(store, cfg))
+	if token := os.Getenv("INFINITY_REVIEW_WRITE_TOKEN"); token != "" {
+		server.WithLimitCorrectionImporter(token, consoleops.LimitCorrectionImporter(store, cfg.Runtime.Timezone))
+	}
 	httpServer := &http.Server{
 		Addr:              listen,
 		Handler:           server.HandlerWithConsoleDist(consoleDist),

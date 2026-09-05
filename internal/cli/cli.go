@@ -64,6 +64,12 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return 2
 	}
 	switch args[0] {
+	case "refresh-limit-review":
+		return runRefreshLimitReview(ctx, args[1:], stdout, stderr)
+	case "import-limit-performance-tdx":
+		return runImportLimitIndex(ctx, args[1:], stdout, stderr)
+	case "import-limit-review-json", "import-limit-review-corrections", "import-limit-performance-json", "import-market-breadth-json":
+		return runImportLimitReview(ctx, args[1:], stdout, stderr, args[0])
 	case "bootstrap":
 		return runBootstrap(ctx, args[1:], stdout, stderr)
 	case "status":
@@ -3422,6 +3428,9 @@ func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
 }
 
 func printUsage(out io.Writer) {
+	fmt.Fprintln(out, "review imports: import-limit-review-json, import-limit-review-corrections, import-limit-performance-json, import-market-breadth-json")
+	fmt.Fprintln(out, "review online: refresh-limit-review --date YYYY-MM-DD [--dry-run]")
+	fmt.Fprintln(out, "review indices: import-limit-performance-tdx --index-code CODE --since YYYY-MM-DD --until YYYY-MM-DD [--dry-run]")
 	fmt.Fprintln(out, "usage: marketd <command> [flags]")
 	fmt.Fprintln(out, "commands:")
 	fmt.Fprintln(out, "  bootstrap")

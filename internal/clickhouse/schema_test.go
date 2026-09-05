@@ -25,6 +25,12 @@ func TestBootstrapDDL(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.tdx_gp_metric_dictionary",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_intraday_points",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_daily_derived",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_limit_events",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_limit_daily_summary",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_limit_relay_events",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_limit_performance_index_bars_1d",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_market_breadth_daily",
+		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_limit_theme_daily",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_xdxr_events",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_adjust_factors_1d",
 		"CREATE TABLE IF NOT EXISTS `infinity_market`.a_share_capital_change_events",
@@ -48,6 +54,10 @@ func TestBootstrapDDL(t *testing.T) {
 		"ORDER BY (item_id)",
 		"ORDER BY (metric_type)",
 		"ORDER BY (market, symbol, trade_date, point_time)",
+		"ORDER BY (trade_date, event_type, market, symbol)",
+		"ORDER BY (trade_date, sample_group, market, symbol)",
+		"ORDER BY (index_code, trade_date)",
+		"ORDER BY (trade_date, theme_name)",
 		"ORDER BY (market, symbol, event_date, category)",
 		"ORDER BY (market, symbol, event_date, category, event_seq)",
 		"ORDER BY (block_scope, snapshot_time, snapshot_id)",
@@ -139,6 +149,33 @@ func TestBootstrapDDL(t *testing.T) {
 				t.Fatalf("%s DDL contains %q\n%s", table, forbidden, tableDDL)
 			}
 		}
+	}
+	for _, table := range []string{"a_share_limit_events", "a_share_limit_daily_summary", "a_share_limit_relay_events", "a_share_limit_performance_index_bars_1d", "a_share_market_breadth_daily", "a_share_limit_theme_daily"} {
+		tableDDL := ""
+		for _, stmt := range ddl {
+			if strings.Contains(stmt, table) {
+				tableDDL = stmt
+				break
+			}
+		}
+		if tableDDL == "" {
+			t.Fatalf("missing %s DDL", table)
+		}
+		for _, forbidden := range []string{"source_key", "source_file", "version UInt64", "updated_at", "name String"} {
+			if strings.Contains(tableDDL, forbidden) {
+				t.Fatalf("%s DDL contains %q\n%s", table, forbidden, tableDDL)
+			}
+		}
+	}
+	eventDDL := ""
+	for _, stmt := range ddl {
+		if strings.Contains(stmt, "a_share_limit_events") {
+			eventDDL = stmt
+			break
+		}
+	}
+	if strings.Contains(eventDDL, "pct_chg") {
+		t.Fatalf("limit event facts contain pct_chg\n%s", eventDDL)
 	}
 }
 

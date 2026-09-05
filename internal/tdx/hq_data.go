@@ -622,15 +622,16 @@ func DecodeHQBarsResponse(req HQBarsRequest, index bool, body []byte) ([]HQBar, 
 			return nil, err
 		}
 		pos = next
-		closeDiff, pos, err := readTDXVarInt(body, pos)
+		var closeDiff, highDiff, lowDiff int
+		closeDiff, pos, err = readTDXVarInt(body, pos)
 		if err != nil {
 			return nil, err
 		}
-		highDiff, pos, err := readTDXVarInt(body, pos)
+		highDiff, pos, err = readTDXVarInt(body, pos)
 		if err != nil {
 			return nil, err
 		}
-		lowDiff, pos, err := readTDXVarInt(body, pos)
+		lowDiff, pos, err = readTDXVarInt(body, pos)
 		if err != nil {
 			return nil, err
 		}

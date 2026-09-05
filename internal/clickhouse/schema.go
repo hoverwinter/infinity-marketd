@@ -180,6 +180,120 @@ ORDER BY (market, symbol, trade_date, point_time)`, marketDB),
 ENGINE = ReplacingMergeTree(computed_at)
 PARTITION BY toYear(trade_date)
 ORDER BY (trade_date, market, symbol)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_limit_events
+(
+    trade_date Date,
+    market LowCardinality(String),
+    symbol String,
+    event_type LowCardinality(String),
+    close_status LowCardinality(String),
+    board_count UInt16,
+    reason_text String,
+    theme_primary LowCardinality(String),
+    theme_tags Array(String),
+    first_limit_minute Nullable(String),
+    last_limit_minute Nullable(String),
+    open_count Nullable(UInt16),
+    seal_order_amount Nullable(Float64),
+    amount Nullable(Float64),
+    turnover_rate Nullable(Float64),
+    market_value Nullable(Float64)
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(trade_date)
+ORDER BY (trade_date, event_type, market, symbol)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_limit_daily_summary
+(
+    trade_date Date,
+    prev_trade_date Nullable(Date),
+    limit_up_count UInt32,
+    limit_down_count UInt32,
+    open_limit_count UInt32,
+    seal_success_rate Nullable(Float64),
+    max_board_height UInt16,
+    first_board_count UInt32,
+    continuous_board_count UInt32,
+    prev_limit_up_promotion_rate Nullable(Float64),
+    prev_ladder_promotion_rate Nullable(Float64),
+    big_noodle_count Nullable(UInt32),
+    high_level_break_count Nullable(UInt32),
+    strong_theme_count Nullable(UInt32),
+    two_board_count UInt32,
+    three_board_count UInt32,
+    four_board_count UInt32,
+    five_plus_board_count UInt32
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(trade_date)
+ORDER BY (trade_date)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_limit_relay_events
+(
+    trade_date Date,
+    prev_trade_date Date,
+    market LowCardinality(String),
+    symbol String,
+    sample_group LowCardinality(String),
+    prev_board_count UInt16,
+    prev_reason_text String,
+    prev_theme_primary LowCardinality(String),
+    prev_first_limit_minute Nullable(String),
+    today_status LowCardinality(String),
+    today_board_count UInt16,
+    today_pct_chg Nullable(Float64)
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(trade_date)
+ORDER BY (trade_date, sample_group, market, symbol)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_limit_performance_index_bars_1d
+(
+    index_code LowCardinality(String),
+    trade_date Date,
+    open Float64,
+    high Float64,
+    low Float64,
+    close Float64,
+    volume Nullable(UInt64),
+    amount Nullable(Float64)
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(trade_date)
+ORDER BY (index_code, trade_date)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_market_breadth_daily
+(
+    trade_date Date,
+    up_count UInt32,
+    down_count UInt32,
+    flat_count Nullable(UInt32),
+    unchanged_or_suspended_count Nullable(UInt32),
+    up_gt_3_count Nullable(UInt32),
+    up_gt_5_count Nullable(UInt32),
+    up_gt_7_count Nullable(UInt32),
+    down_gt_3_count Nullable(UInt32),
+    down_gt_5_count Nullable(UInt32),
+    down_gt_7_count Nullable(UInt32),
+    limit_up_count Nullable(UInt32),
+    limit_down_count Nullable(UInt32),
+    total_count UInt32
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(trade_date)
+ORDER BY (trade_date)`, marketDB),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_limit_theme_daily
+(
+    trade_date Date,
+    theme_name LowCardinality(String),
+    limit_up_count UInt32,
+    ladder_count UInt32,
+    broken_count UInt32,
+    limit_down_count UInt32,
+    leader_market LowCardinality(String),
+    leader_symbol String,
+    leader_board_count UInt16,
+    strength_rank UInt16
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYear(trade_date)
+ORDER BY (trade_date, theme_name)`, marketDB),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.a_share_xdxr_events
 	(
 	    market LowCardinality(String),

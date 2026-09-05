@@ -39,6 +39,8 @@ type OnlineJob[T any] struct {
 	Write func(ctx context.Context, rows []T) error
 	// Bounds returns optional watermark min/max for the produced rows.
 	Bounds func(rows []T) (*time.Time, *time.Time)
+	// CountRows counts persisted rows when a produced item is a multi-table bundle.
+	CountRows func(rows []T) uint64
 }
 
 // OnlineResult is the runner's product-agnostic outcome.
@@ -75,6 +77,9 @@ func RunOnlineJob[T any](ctx context.Context, job OnlineJob[T]) (OnlineResult, e
 		return result, err
 	}
 	result.RowsWritten = uint64(len(rows))
+	if job.CountRows != nil {
+		result.RowsWritten = job.CountRows(rows)
+	}
 	if job.DryRun {
 		return result, nil
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,6 +13,340 @@ import (
 
 func (s *Store) Health(ctx context.Context) error {
 	return s.conn.Ping(ctx)
+}
+
+func (s *Store) LimitEvents(ctx context.Context, q querier.LimitQuery) (querier.LimitResult[querier.LimitEvent], error) {
+	return queryLimitRows[querier.LimitEvent](ctx, s, q, "events")
+}
+
+func (s *Store) LimitSummaries(ctx context.Context, q querier.LimitQuery) (querier.LimitResult[querier.LimitDailySummary], error) {
+	result, err := queryLimitRows[querier.LimitDailySummary](ctx, s, q, "summary")
+	if err != nil {
+		return result, err
+	}
+	if len(result.Rows) == 0 {
+		return result, nil
+	}
+	dates := make([]any, 0, len(result.Rows))
+	for _, row := range result.Rows {
+		dates = append(dates, row.TradeDate)
+	}
+	table, err := tableName(s.marketDB, "a_share_limit_events")
+	if err != nil {
+		return result, err
+	}
+	var counts []querier.LimitDailySummary
+	placeholders := strings.TrimSuffix(strings.Repeat("toDate(?),", len(dates)), ",")
+	stmt := fmt.Sprintf(`SELECT
+    toString(r.trade_date) AS trade_date,
+    toUInt32(countIf(event_type='limit_up')) AS limit_up_count,
+    toUInt32(countIf(event_type='limit_down')) AS limit_down_count,
+    toUInt32(countIf(event_type='open_limit')) AS open_limit_count,
+    toUInt16(maxIf(board_count,event_type='limit_up')) AS max_board_height,
+    toUInt32(countIf(event_type='limit_up' AND board_count=1)) AS first_board_count,
+    toUInt32(countIf(event_type='limit_up' AND board_count>=2)) AS continuous_board_count,
+    toUInt32(countIf(event_type='limit_up' AND board_count=2)) AS two_board_count,
+    toUInt32(countIf(event_type='limit_up' AND board_count=3)) AS three_board_count,
+    toUInt32(countIf(event_type='limit_up' AND board_count=4)) AS four_board_count,
+    toUInt32(countIf(event_type='limit_up' AND board_count>=5)) AS five_plus_board_count,
+    countIf(event_type='limit_up') / nullIf(countIf(event_type='limit_up')+
+        countIf(event_type='open_limit' AND close_status!='broken_reseal'),0) AS seal_success_rate
+FROM %s AS r FINAL WHERE r.trade_date IN (%s) GROUP BY r.trade_date`, table, placeholders)
+	if err := s.conn.Select(ctx, &counts, stmt, dates...); err != nil {
+		return result, err
+	}
+	byDate := map[string]querier.LimitDailySummary{}
+	for _, row := range counts {
+		byDate[row.TradeDate] = row
+	}
+	for i := range result.Rows {
+		if fresh, ok := byDate[result.Rows[i].TradeDate]; ok {
+			old := result.Rows[i]
+			// A missing rate may mean the historical broken-board pool was never observed.
+			if old.SealSuccessRate == nil {
+				fresh.SealSuccessRate = nil
+			}
+			fresh.PrevTradeDate = old.PrevTradeDate
+			fresh.PrevLimitUpPromotionRate = old.PrevLimitUpPromotionRate
+			fresh.PrevLadderPromotionRate = old.PrevLadderPromotionRate
+			fresh.BigNoodleCount = old.BigNoodleCount
+			fresh.HighLevelBreakCount = old.HighLevelBreakCount
+			fresh.StrongThemeCount = old.StrongThemeCount
+			result.Rows[i] = fresh
+		}
+	}
+	return result, nil
+}
+
+func (s *Store) LimitRelay(ctx context.Context, q querier.LimitQuery) (querier.LimitResult[querier.LimitRelayEvent], error) {
+	q, err := querier.NormalizeLimitQuery(q, "relay")
+	result := querier.LimitResult[querier.LimitRelayEvent]{Query: q, Rows: []querier.LimitRelayEvent{}}
+	if err != nil {
+		return result, err
+	}
+	base := querier.LimitQuery{TradeDate: q.TradeDate, Since: q.Since, Until: q.Until}
+	summaries, err := allLimitRows[querier.LimitDailySummary](ctx, s, base, "summary")
+	if err != nil {
+		return result, err
+	}
+	stored, err := allLimitRows[querier.LimitRelayEvent](ctx, s, base, "relay")
+	if err != nil {
+		return result, err
+	}
+	prevByDate := map[string]string{}
+	storedByDate := map[string][]querier.LimitRelayEvent{}
+	for _, row := range stored {
+		storedByDate[row.TradeDate] = append(storedByDate[row.TradeDate], row)
+		if prev, ok := prevByDate[row.TradeDate]; ok && prev != row.PrevTradeDate {
+			return result, fmt.Errorf("conflicting previous trading dates on %s", row.TradeDate)
+		}
+		prevByDate[row.TradeDate] = row.PrevTradeDate
+	}
+	for _, row := range summaries {
+		if row.PrevTradeDate != nil {
+			prevByDate[row.TradeDate] = *row.PrevTradeDate
+		}
+	}
+	if q.PrevTradeDate != "" {
+		prevByDate[q.TradeDate] = q.PrevTradeDate
+	}
+	since, until := q.Since, q.Until
+	if q.TradeDate != "" {
+		since, until = q.TradeDate, q.TradeDate
+	}
+	earliest := since
+	for date, prev := range prevByDate {
+		if prev >= date || prev == "" {
+			return result, fmt.Errorf("invalid previous trading date on %s", date)
+		}
+		if prev < earliest {
+			earliest = prev
+		}
+	}
+	events, err := allLimitRows[querier.LimitEvent](ctx, s, querier.LimitQuery{Since: earliest, Until: until, Market: q.Market, Symbol: q.Symbol}, "events")
+	if err != nil {
+		return result, err
+	}
+	eventsByDate := map[string][]querier.LimitEvent{}
+	for _, row := range events {
+		eventsByDate[row.TradeDate] = append(eventsByDate[row.TradeDate], row)
+	}
+	derived, err := tableName(s.marketDB, "a_share_daily_derived")
+	if err != nil {
+		return result, err
+	}
+	var performance []querier.ReviewDailyPerformance
+	stmt := "SELECT toString(r.trade_date) AS trade_date, market, symbol, pct_chg FROM " + derived + " AS r FINAL WHERE r.trade_date >= toDate(?) AND r.trade_date <= toDate(?)"
+	args := []any{since, until}
+	if q.Market != "" {
+		stmt += " AND market = ?"
+		args = append(args, q.Market)
+	}
+	if q.Symbol != "" {
+		stmt += " AND symbol = ?"
+		args = append(args, q.Symbol)
+	}
+	if err := s.conn.Select(ctx, &performance, stmt+" LIMIT 600001", args...); err != nil {
+		return result, err
+	}
+	if len(performance) > 600000 {
+		return result, fmt.Errorf("daily performance exceeds reconstruction limit")
+	}
+	performanceByDate := map[string][]querier.ReviewDailyPerformance{}
+	for _, row := range performance {
+		performanceByDate[row.TradeDate] = append(performanceByDate[row.TradeDate], row)
+	}
+	for date, prev := range prevByDate {
+		rows := storedByDate[date]
+		if len(eventsByDate[prev]) > 0 {
+			day := querier.LimitQuery{TradeDate: date, Limit: 200000}
+			rebuilt := querier.ReconstructLimitRelay(day, prev, eventsByDate[prev], eventsByDate[date], rows, performanceByDate[date])
+			if rebuilt.HasMore {
+				return result, fmt.Errorf("daily relay exceeds reconstruction limit")
+			}
+			rows = rebuilt.Rows
+		}
+		for _, row := range rows {
+			if (q.Market == "" || row.Market == q.Market) && (q.Symbol == "" || row.Symbol == q.Symbol) && (q.Theme == "" || row.PrevThemePrimary == q.Theme) && (q.SampleGroup == "" || row.SampleGroup == q.SampleGroup) && (q.PrevTradeDate == "" || row.PrevTradeDate == q.PrevTradeDate) {
+				result.Rows = append(result.Rows, row)
+			}
+		}
+	}
+	sort.Slice(result.Rows, func(i, j int) bool {
+		a, b := result.Rows[i], result.Rows[j]
+		if a.TradeDate != b.TradeDate {
+			return a.TradeDate < b.TradeDate
+		}
+		if a.SampleGroup != b.SampleGroup {
+			return a.SampleGroup < b.SampleGroup
+		}
+		if a.Market != b.Market {
+			return a.Market < b.Market
+		}
+		return a.Symbol < b.Symbol
+	})
+	return pageLimitResult(result), nil
+}
+
+func (s *Store) LimitThemes(ctx context.Context, q querier.LimitQuery) (querier.LimitResult[querier.LimitThemeDaily], error) {
+	q, err := querier.NormalizeLimitQuery(q, "themes")
+	result := querier.LimitResult[querier.LimitThemeDaily]{Query: q, Rows: []querier.LimitThemeDaily{}}
+	if err != nil {
+		return result, err
+	}
+	base := querier.LimitQuery{TradeDate: q.TradeDate, Since: q.Since, Until: q.Until}
+	stored, err := allLimitRows[querier.LimitThemeDaily](ctx, s, base, "themes")
+	if err != nil {
+		return result, err
+	}
+	events, err := allLimitRows[querier.LimitEvent](ctx, s, base, "events")
+	if err != nil {
+		return result, err
+	}
+	dates := map[string]bool{}
+	for _, event := range events {
+		dates[event.TradeDate] = true
+	}
+	rows := querier.AggregateLimitThemes(events)
+	for _, row := range stored {
+		if !dates[row.TradeDate] {
+			rows = append(rows, row)
+		}
+	}
+	for _, row := range rows {
+		if q.Theme == "" || row.ThemeName == q.Theme {
+			result.Rows = append(result.Rows, row)
+		}
+	}
+	sort.Slice(result.Rows, func(i, j int) bool {
+		a, b := result.Rows[i], result.Rows[j]
+		if a.TradeDate != b.TradeDate {
+			return a.TradeDate < b.TradeDate
+		}
+		if a.StrengthRank != b.StrengthRank {
+			return a.StrengthRank < b.StrengthRank
+		}
+		return a.ThemeName < b.ThemeName
+	})
+	return pageLimitResult(result), nil
+}
+
+func allLimitRows[T any](ctx context.Context, s *Store, q querier.LimitQuery, kind string) ([]T, error) {
+	return querier.ReadCompleteLimitRows(ctx, q, func(ctx context.Context, page querier.LimitQuery) (querier.LimitResult[T], error) {
+		return queryLimitRows[T](ctx, s, page, kind)
+	})
+}
+
+func pageLimitResult[T any](r querier.LimitResult[T]) querier.LimitResult[T] {
+	if r.Query.Offset >= len(r.Rows) {
+		r.Rows = []T{}
+		return r
+	}
+	r.Rows = r.Rows[r.Query.Offset:]
+	r.HasMore = len(r.Rows) > r.Query.Limit
+	if r.HasMore {
+		r.Rows = r.Rows[:r.Query.Limit]
+	}
+	return r
+}
+
+func (s *Store) LimitPerformanceIndices(ctx context.Context, q querier.LimitQuery) (querier.LimitResult[querier.LimitPerformanceIndexBar], error) {
+	return queryLimitRows[querier.LimitPerformanceIndexBar](ctx, s, q, "indices")
+}
+
+func (s *Store) MarketBreadth(ctx context.Context, q querier.LimitQuery) (querier.LimitResult[querier.MarketBreadthDaily], error) {
+	return queryLimitRows[querier.MarketBreadthDaily](ctx, s, q, "breadth")
+}
+
+func queryLimitRows[T any](ctx context.Context, s *Store, q querier.LimitQuery, kind string) (querier.LimitResult[T], error) {
+	q, err := querier.NormalizeLimitQuery(q, kind)
+	result := querier.LimitResult[T]{Query: q, Rows: []T{}}
+	if err != nil {
+		return result, err
+	}
+	stmt, args, err := limitReviewSQL(s.marketDB, kind, q)
+	if err != nil {
+		return result, err
+	}
+	if err = s.conn.Select(ctx, &result.Rows, stmt, args...); err != nil {
+		return result, err
+	}
+	if len(result.Rows) > q.Limit {
+		result.HasMore = true
+		result.Rows = result.Rows[:q.Limit]
+	}
+	return result, nil
+}
+
+func limitReviewSQL(db, kind string, q querier.LimitQuery) (string, []any, error) {
+	var name, columns, order string
+	switch kind {
+	case "events":
+		name = "a_share_limit_events"
+		columns = "toString(r.trade_date) AS trade_date, market, symbol, event_type, close_status, board_count, reason_text, theme_primary, theme_tags, first_limit_minute, last_limit_minute, open_count, seal_order_amount, amount, turnover_rate, market_value"
+		order = "trade_date, event_type, market, symbol"
+	case "summary":
+		name = "a_share_limit_daily_summary"
+		columns = "toString(r.trade_date) AS trade_date, toString(r.prev_trade_date) AS prev_trade_date, limit_up_count, limit_down_count, open_limit_count, seal_success_rate, max_board_height, first_board_count, continuous_board_count, prev_limit_up_promotion_rate, prev_ladder_promotion_rate, big_noodle_count, high_level_break_count, strong_theme_count, two_board_count, three_board_count, four_board_count, five_plus_board_count"
+		order = "trade_date"
+	case "relay":
+		name = "a_share_limit_relay_events"
+		columns = "toString(r.trade_date) AS trade_date, toString(r.prev_trade_date) AS prev_trade_date, market, symbol, sample_group, prev_board_count, prev_reason_text, prev_theme_primary, prev_first_limit_minute, today_status, today_board_count, today_pct_chg"
+		order = "trade_date, sample_group, market, symbol"
+	case "themes":
+		name = "a_share_limit_theme_daily"
+		columns = "toString(r.trade_date) AS trade_date, theme_name, limit_up_count, ladder_count, broken_count, limit_down_count, leader_market, leader_symbol, leader_board_count, strength_rank"
+		order = "trade_date, strength_rank, theme_name"
+	case "indices":
+		name = "a_share_limit_performance_index_bars_1d"
+		columns = "index_code, toString(r.trade_date) AS trade_date, open, high, low, close, volume, amount"
+		order = "trade_date, index_code"
+	case "breadth":
+		name = "a_share_market_breadth_daily"
+		columns = "toString(r.trade_date) AS trade_date, up_count, down_count, flat_count, unchanged_or_suspended_count, up_gt_3_count, up_gt_5_count, up_gt_7_count, down_gt_3_count, down_gt_5_count, down_gt_7_count, limit_up_count, limit_down_count, total_count"
+		order = "trade_date"
+	default:
+		return "", nil, fmt.Errorf("unsupported review dataset %q", kind)
+	}
+	table, err := tableName(db, name)
+	if err != nil {
+		return "", nil, err
+	}
+	clauses := []string{}
+	args := []any{}
+	if q.TradeDate != "" {
+		clauses = append(clauses, "r.trade_date = toDate(?)")
+		args = append(args, q.TradeDate)
+	} else {
+		clauses = append(clauses, "r.trade_date >= toDate(?)", "r.trade_date <= toDate(?)")
+		args = append(args, q.Since, q.Until)
+	}
+	for _, filter := range []struct{ column, value string }{{"market", q.Market}, {"symbol", q.Symbol}, {"event_type", q.EventType}, {"sample_group", q.SampleGroup}, {"index_code", q.IndexCode}} {
+		if filter.value != "" {
+			clauses = append(clauses, filter.column+" = ?")
+			args = append(args, filter.value)
+		}
+	}
+	if q.PrevTradeDate != "" {
+		clauses = append(clauses, "r.prev_trade_date = toDate(?)")
+		args = append(args, q.PrevTradeDate)
+	}
+	if q.Theme != "" {
+		column := "theme_primary"
+		if kind == "themes" {
+			column = "theme_name"
+		} else if kind == "relay" {
+			column = "prev_theme_primary"
+		}
+		if kind == "events" {
+			clauses = append(clauses, "(theme_primary = ? OR has(theme_tags, ?))")
+			args = append(args, q.Theme, q.Theme)
+		} else {
+			clauses = append(clauses, column+" = ?")
+			args = append(args, q.Theme)
+		}
+	}
+	return fmt.Sprintf("SELECT %s FROM %s AS r FINAL WHERE %s ORDER BY %s LIMIT %d OFFSET %d", columns, table, strings.Join(clauses, " AND "), order, q.Limit+1, q.Offset), args, nil
 }
 
 func (s *Store) Bars(ctx context.Context, query querier.BarQuery) (querier.BarResult, error) {

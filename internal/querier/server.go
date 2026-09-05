@@ -17,6 +17,7 @@ type Server struct {
 	securitiesRepo         securitymaster.Reader
 	tdxProvider            *TDXProvider
 	consoleHQDailyImporter ConsoleHQDailyImporter
+	limitCorrectionHandler http.HandlerFunc
 }
 
 func NewServer(repo Repository) *Server {
@@ -59,7 +60,11 @@ func (s *Server) HandlerWithConsoleDist(consoleDist string) http.Handler {
 	mux.HandleFunc("GET /api/v1/securities", s.handleSecurity)
 	mux.HandleFunc("GET /api/v1/securities/resolve", s.handleSecurityResolve)
 	s.registerTDXRoutes(mux)
+	s.registerLimitReviewRoutes(mux)
 	s.registerConsoleRoutes(mux)
+	if s.limitCorrectionHandler != nil {
+		mux.HandleFunc("POST /api/console/imports/limit-review-corrections", s.limitCorrectionHandler)
+	}
 	if strings.TrimSpace(consoleDist) != "" {
 		registerConsoleStaticRoutes(mux, consoleDist)
 	}
