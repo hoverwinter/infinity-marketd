@@ -32,6 +32,7 @@ var probeHQServers = tdx.ProbeHQServers
 var refreshHQBestIPCache = tdx.RefreshHQBestIPCache
 var fetchQuoteSweep = tdx.QuoteSweep
 var fetchHQSecurityBars = tdx.FetchHQSecurityBars
+var fetchG4DayPackage = tdx.FetchG4DayPackage
 var fetchHQIndexBars = tdx.FetchHQIndexBars
 var fetchHQMinuteTime = tdx.FetchHQMinuteTime
 var fetchHQHistoryMinuteTime = tdx.FetchHQHistoryMinuteTime
@@ -84,6 +85,8 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runImportVIPDocZip(ctx, args[1:], stdout, stderr)
 	case "import-tdx-hq-day":
 		return runImportHQDaily(ctx, args[1:], stdout, stderr)
+	case "import-tdx-g4-day":
+		return runImportG4Daily(ctx, args[1:], stdout, stderr)
 	case "import-tdx-fin":
 		return runImportTDXFinancial(ctx, args[1:], stdout, stderr)
 	case "import-tdx-gp":
@@ -2342,6 +2345,41 @@ func runImportHQDaily(ctx context.Context, args []string, stdout io.Writer, stde
 	return 0
 }
 
+func runImportG4Daily(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	var overrides config.Overrides
+	var file, date, baseURL string
+	var dryRun bool
+	fs := newFlagSet("import-tdx-g4-day", stderr)
+	config.RegisterCommonFlags(fs, &overrides)
+	fs.StringVar(&file, "file", "", "local g4day ZIP; skips remote download")
+	fs.StringVar(&date, "date", "", "package trade date YYYY-MM-DD or YYYYMMDD")
+	fs.StringVar(&baseURL, "base-url", "", "g4day download base URL")
+	fs.BoolVar(&dryRun, "dry-run", false, "download or read, validate, and summarize without writing")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cfg, store, cleanup, ok := loadConfigAndMaybeStore(ctx, overrides, dryRun, stderr)
+	if !ok {
+		return 1
+	}
+	defer cleanup()
+	summary, err := ingest.ImportG4DailyBars(ctx, ingest.G4DailyImportOptions{
+		File:         file,
+		Date:         date,
+		BaseURL:      baseURL,
+		DryRun:       dryRun,
+		Store:        store,
+		Timezone:     cfg.Runtime.Timezone,
+		FetchPackage: fetchG4DayPackage,
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	printG4DailySummary(stdout, summary)
+	return 0
+}
+
 func runImportVIPDocZip(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	var overrides config.Overrides
 	var file, periodText, market, since, until string
@@ -2968,6 +3006,31 @@ func printHQDailySummary(out io.Writer, summary ingest.HQDailySummary) {
 	fmt.Fprintf(out, "quality_issues: %d\n", len(summary.Issues))
 }
 
+func printG4DailySummary(out io.Writer, summary ingest.G4DailySummary) {
+	mode := "write"
+	if summary.DryRun {
+		mode = "dry-run"
+	}
+	fmt.Fprintf(out, "mode: %s\n", mode)
+	fmt.Fprintf(out, "run_id: %s\n", summary.RunID)
+	fmt.Fprintf(out, "dataset: %s\n", summary.Dataset)
+	fmt.Fprintf(out, "target_table: %s\n", summary.TargetTable)
+	fmt.Fprintf(out, "source: %s\n", summary.Source)
+	fmt.Fprintf(out, "trade_date: %s\n", summary.TradeDate)
+	fmt.Fprintf(out, "sha256: %s\n", summary.SHA256)
+	fmt.Fprintf(out, "package_bytes: %d\n", summary.PackageBytes)
+	fmt.Fprintf(out, "records: %d\n", summary.Records)
+	fmt.Fprintf(out, "sh_records: %d\n", summary.SHRecords)
+	fmt.Fprintf(out, "sz_records: %d\n", summary.SZRecords)
+	fmt.Fprintf(out, "bj_records: %d\n", summary.BJRecords)
+	fmt.Fprintf(out, "equity_records: %d\n", summary.EquityRecords)
+	fmt.Fprintf(out, "no_trade_records: %d\n", summary.NoTradeRecords)
+	fmt.Fprintf(out, "non_equity_records: %d\n", summary.NonEquityRecords)
+	fmt.Fprintf(out, "rows_written: %d\n", summary.RowsWritten)
+	fmt.Fprintf(out, "rows_skipped: %d\n", summary.RowsSkipped)
+	fmt.Fprintf(out, "quality_issues: %d\n", len(summary.Issues))
+}
+
 func printBulkSummary(out io.Writer, summary bulkImportSummary) {
 	mode := "write"
 	if summary.DryRun {
@@ -3440,6 +3503,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  import-tdx-5m")
 	fmt.Fprintln(out, "  import-tdx-vipdoc-zip")
 	fmt.Fprintln(out, "  import-tdx-hq-day")
+	fmt.Fprintln(out, "  import-tdx-g4-day")
 	fmt.Fprintln(out, "  import-tdx-fin")
 	fmt.Fprintln(out, "  import-tdx-gp")
 	fmt.Fprintln(out, "  tdx-fin-files")
