@@ -9,3 +9,5 @@ TongDaXin (TDX) binary parsing — the source-of-truth decoders.
 - `exquote.go` / `exquote_data.go` — TDX extended `exhq` market list, instrument catalog, quote, K-line, minute-time, transaction, and history packets/decoders.
 
 All timestamps use `Asia/Shanghai`. Format reference: `docs/tdx-data/`. This package owns TDX parsing and TDX network protocol clients; it must not open ClickHouse or orchestrate imports.
+
+`marketdata.go` adapts existing HQ security/index bars to the optional `marketdata.BarsProvider` contract. It owns bounded backwards pagination and retains native volume units; wire decoders and existing protocol APIs do not change.

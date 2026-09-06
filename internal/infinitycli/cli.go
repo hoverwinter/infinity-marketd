@@ -53,6 +53,8 @@ func runQuerier(ctx context.Context, args []string, stdout io.Writer, stderr io.
 		return runQuerierIntradayPoints(ctx, args[1:], stdout, stderr)
 	case "resolve-symbol":
 		return runQuerierResolveSymbol(ctx, args[1:], stdout, stderr)
+	case "providers", "provider-bars", "provider-boards", "provider-board":
+		return runProviderCommand(ctx, args[0], args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printQuerierUsage(stdout)
 		return 0
@@ -108,6 +110,7 @@ func runQuerierServe(ctx context.Context, args []string, stdout io.Writer, stder
 		defer closeSecurities()
 	}
 	server := querier.NewServerWithSecurities(store, securitiesRepo).WithConsoleHQDailyImporter(consoleops.HQDailyImporter(store, cfg))
+	server.WithTHSCookie(os.Getenv("INFINITY_THS_COOKIE"))
 	httpServer := &http.Server{
 		Addr:              listen,
 		Handler:           server.HandlerWithConsoleDist(consoleDist),
@@ -272,4 +275,5 @@ func printQuerierUsage(out io.Writer) {
 	fmt.Fprintln(out, "  bars")
 	fmt.Fprintln(out, "  intraday-points")
 	fmt.Fprintln(out, "  resolve-symbol")
+	fmt.Fprintln(out, "  providers / provider-bars / provider-boards / provider-board")
 }

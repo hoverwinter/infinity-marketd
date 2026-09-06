@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hoverwinter/infinity-marketd/internal/marketdata"
 	"github.com/hoverwinter/infinity-marketd/internal/securitymaster"
 	"github.com/hoverwinter/infinity-marketd/internal/tdx"
 )
@@ -16,6 +17,7 @@ type Server struct {
 	repo                   Repository
 	securitiesRepo         securitymaster.Reader
 	tdxProvider            *TDXProvider
+	marketDataProviders    *marketdata.Registry
 	consoleHQDailyImporter ConsoleHQDailyImporter
 	limitCorrectionHandler http.HandlerFunc
 }
@@ -39,7 +41,7 @@ func NewServerWithSecuritiesAndTDXProvider(repo Repository, securitiesRepo secur
 	if securitiesRepo == nil {
 		securitiesRepo = securitymaster.NewUnavailableReader(fmt.Errorf("mysql is not configured"))
 	}
-	return &Server{repo: repo, securitiesRepo: securitiesRepo, tdxProvider: provider}
+	return &Server{repo: repo, securitiesRepo: securitiesRepo, tdxProvider: provider, marketDataProviders: defaultMarketDataProviders(provider, "")}
 }
 
 func (s *Server) WithConsoleHQDailyImporter(importer ConsoleHQDailyImporter) *Server {
@@ -60,6 +62,7 @@ func (s *Server) HandlerWithConsoleDist(consoleDist string) http.Handler {
 	mux.HandleFunc("GET /api/v1/securities", s.handleSecurity)
 	mux.HandleFunc("GET /api/v1/securities/resolve", s.handleSecurityResolve)
 	s.registerTDXRoutes(mux)
+	s.registerMarketDataRoutes(mux)
 	s.registerLimitReviewRoutes(mux)
 	s.registerConsoleRoutes(mux)
 	if s.limitCorrectionHandler != nil {

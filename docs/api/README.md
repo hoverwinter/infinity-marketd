@@ -53,6 +53,8 @@ TDX 在线协议能力不放在 `/api/v1` 下。后续 TDX provider/protocol API
 
 TDX provider API 的详细 endpoint contract 见 [tdx.md](tdx.md)。
 
+按数据产品统一的多来源在线读取位于 `/api/providers/...`，默认注册 TDX、THS、Eastmoney 三源：TDX 证券/指数 K 线，以及 THS/Eastmoney 板块指数日线、目录和代码解析。该入口显式选择来源，不访问事实存储或隐式导入；接口、来源内身份、能力范围和实际联网验证状态见 [providers.md](providers.md)。
+
 错误响应格式：
 
 ```json
