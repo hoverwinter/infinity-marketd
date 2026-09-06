@@ -66,6 +66,40 @@ func TestLimitHTTPEndpointsAndEmptyJSON(t *testing.T) {
 	}
 }
 
+func TestLimitReasonKeywordHTTPClient(t *testing.T) {
+	server := httptest.NewServer(NewServer(&fakeRepo{}).Handler())
+	defer server.Close()
+	client := NewHTTPClient(server.URL, server.Client())
+	for _, keyword := range []string{" 液冷 ", "aI", "50%_+O'Reilly", "", " \t "} {
+		t.Run(keyword, func(t *testing.T) {
+			q := LimitQuery{Since: "2026-09-01", Until: "2026-09-04", Market: "sh", Symbol: "600506", EventType: "limit_up", Theme: "算力硬件", ReasonKeyword: keyword, Limit: 2, Offset: 1}
+			result, err := client.LimitEvents(context.Background(), q)
+			q.ReasonKeyword = strings.TrimSpace(keyword)
+			if err != nil || result.Query != q || result.Rows == nil || result.HasMore {
+				t.Fatalf("query round trip: %+v %v", result, err)
+			}
+		})
+	}
+}
+
+func TestLimitReasonKeywordValidation(t *testing.T) {
+	h := NewServer(&fakeRepo{}).Handler()
+	for _, endpoint := range []string{"limit-summary", "limit-relay", "limit-themes", "limit-performance-indices", "market-breadth", "limit-review", "limit-review-matrix"} {
+		t.Run(endpoint, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/"+endpoint+"?trade_date=2026-09-04&reason_keyword=AI", nil))
+			if w.Code != 400 || !strings.Contains(w.Body.String(), "reason_keyword") {
+				t.Fatalf("%d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/limit-events?trade_date=2026-09-04&reason_keyword=%FF", nil))
+	if w.Code != 400 {
+		t.Fatalf("invalid UTF-8 accepted: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestMatrixRangeValidationAndFiltering(t *testing.T) {
 	h := NewServer(&fakeRepo{}).Handler()
 	for _, query := range []string{"since=2016-01-01&until=2026-09-04", "trade_date=2026-09-04&limit=501", "trade_date=2026-09-04&sample_group=prev_ladder"} {

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hoverwinter/infinity-marketd/internal/model"
 )
@@ -154,6 +155,7 @@ type LimitQuery struct {
 	SampleGroup   string `json:"sample_group,omitempty"`
 	IndexCode     string `json:"index_code,omitempty"`
 	Theme         string `json:"theme,omitempty"`
+	ReasonKeyword string `json:"reason_keyword,omitempty"`
 	Limit         int    `json:"limit"`
 	Offset        int    `json:"offset"`
 }
@@ -177,6 +179,10 @@ func NormalizeLimitQuery(q LimitQuery, kind string) (LimitQuery, error) {
 	q.Market = strings.ToLower(strings.TrimSpace(q.Market))
 	q.Symbol = strings.TrimSpace(q.Symbol)
 	q.Theme = strings.TrimSpace(q.Theme)
+	q.ReasonKeyword = strings.TrimSpace(q.ReasonKeyword)
+	if !utf8.ValidString(q.ReasonKeyword) {
+		return q, validationError("reason_keyword must be valid UTF-8")
+	}
 	for _, p := range []*string{&q.TradeDate, &q.PrevTradeDate, &q.Since, &q.Until} {
 		*p = strings.TrimSpace(*p)
 		if *p != "" {
@@ -243,6 +249,9 @@ func NormalizeLimitQuery(q LimitQuery, kind string) (LimitQuery, error) {
 	if q.Theme != "" && kind != "events" && kind != "themes" && kind != "relay" && kind != "matrix" {
 		return q, validationError("theme is not supported for this query")
 	}
+	if q.ReasonKeyword != "" && kind != "events" {
+		return q, validationError("reason_keyword only applies to events")
+	}
 	return q, nil
 }
 
@@ -257,7 +266,7 @@ func limitEnum(value string, choices ...string) bool {
 
 func limitQueryFromRequest(r *http.Request, kind string) (LimitQuery, error) {
 	v := r.URL.Query()
-	q := LimitQuery{TradeDate: v.Get("trade_date"), PrevTradeDate: v.Get("prev_trade_date"), Since: v.Get("since"), Until: v.Get("until"), Market: v.Get("market"), Symbol: v.Get("symbol"), EventType: v.Get("event_type"), SampleGroup: v.Get("sample_group"), IndexCode: v.Get("index_code"), Theme: v.Get("theme")}
+	q := LimitQuery{TradeDate: v.Get("trade_date"), PrevTradeDate: v.Get("prev_trade_date"), Since: v.Get("since"), Until: v.Get("until"), Market: v.Get("market"), Symbol: v.Get("symbol"), EventType: v.Get("event_type"), SampleGroup: v.Get("sample_group"), IndexCode: v.Get("index_code"), Theme: v.Get("theme"), ReasonKeyword: v.Get("reason_keyword")}
 	for _, field := range []struct {
 		key    string
 		target *int
@@ -340,7 +349,7 @@ func (c *HTTPClient) LimitReview(ctx context.Context, date string) (LimitReview,
 
 func limitQueryValues(q LimitQuery) url.Values {
 	v := url.Values{}
-	for k, value := range map[string]string{"trade_date": q.TradeDate, "prev_trade_date": q.PrevTradeDate, "since": q.Since, "until": q.Until, "market": q.Market, "symbol": q.Symbol, "event_type": q.EventType, "theme": q.Theme, "sample_group": q.SampleGroup, "index_code": q.IndexCode} {
+	for k, value := range map[string]string{"trade_date": q.TradeDate, "prev_trade_date": q.PrevTradeDate, "since": q.Since, "until": q.Until, "market": q.Market, "symbol": q.Symbol, "event_type": q.EventType, "theme": q.Theme, "reason_keyword": q.ReasonKeyword, "sample_group": q.SampleGroup, "index_code": q.IndexCode} {
 		if value != "" {
 			v.Set(k, value)
 		}

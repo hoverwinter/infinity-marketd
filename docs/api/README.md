@@ -153,7 +153,7 @@ GET /api/v1/health
 {
   "status": "ok",
   "version": "0.1.0",
-  "schema_version": "2026-09-05"
+  "schema_version": "2026-09-06.1"
 }
 ```
 
@@ -602,13 +602,13 @@ HTTP/1.1 400 Bad Request
 ## 每日复盘 API
 
 以下接口由 ClickHouse 提供，只读，不读取旧 JSON、不临时调用 THS/TDX。
-`schema_version` 为 `2026-09-05`。表定义见 [ClickHouse](../storage/clickhouse.md#a-股复盘表约定)，迁移入口见 [设计与迁移](../design/ashare-limit-review-data-layer.md)。
+`schema_version` 为 `2026-09-06.1`。表定义见 [ClickHouse](../storage/clickhouse.md#a-股复盘表约定)，迁移入口见 [设计与迁移](../design/ashare-limit-review-data-layer.md)。
 
 ### 列表接口
 
 | 路径 | 内容 | 可选业务过滤 |
 | --- | --- | --- |
-| `/api/v1/limit-events` | 涨停、炸板、跌停单股事件 | market、symbol、event_type、theme |
+| `/api/v1/limit-events` | 涨停、炸板、跌停单股事件 | market、symbol、event_type、theme、reason_keyword |
 | `/api/v1/limit-summary` | 每日摘要 | 无 |
 | `/api/v1/limit-relay` | 前日事件样本的当日表现 | market、symbol、sample_group、theme、prev_trade_date |
 | `/api/v1/limit-themes` | 题材日聚合 | theme |
@@ -626,6 +626,8 @@ HTTP/1.1 400 Bad Request
 - `sample_group=prev_limit_up|prev_ladder|prev_broken|prev_limit_down`。
 - `prev_trade_date` 只接受在单日 relay 请求中使用，必须早于 `trade_date`。未提供时取当日摘要中的上一交易日，不会简单减一个自然日。
 - `theme` 在事件查询中匹配主题材或 theme_tags；在 relay 中只匹配前日主题材。
+- `reason_keyword` 仅用于事件列表：在最终 `reason_text` 中匹配一个连续子串，支持中文，英文字母忽略大小写。去除首尾空白后为空则不筛选；不分词、不做语义扩展，`%`、`_`、`+`、引号均按普通字符匹配。原因为空不会命中非空关键词，也不会用题材字段替代原因。无效 UTF-8 返回 400。
+- 原因关键词与日期、market/symbol、event_type、theme 条件取交集，在数据库中先筛选再排序/分页，`has_more` 只表示匹配结果是否还有下一页。其他复盘接口（包括单日复盘和矩阵）传入非空 `reason_keyword` 返回 400。
 - `index_code=prev_limit_up_perf|prev_non_st_limit_up_perf|prev_ladder_perf|prev_limit_down_perf`，未指定则返回全部已保存指数。
 
 日期错误、倒置区间、非法枚举、不适用的业务过滤参数、显式 limit=0 等返回 HTTP 400，错误体为 `{"error":"..."}`。数据库错误返回 HTTP 500。
@@ -689,6 +691,15 @@ curl 'http://127.0.0.1:8808/api/v1/limit-relay?trade_date=2026-09-07&prev_trade_
 
 # 单股历史涨停日期、板数、原因
 curl 'http://127.0.0.1:8808/api/v1/limit-events?market=sz&symbol=000001&event_type=limit_up&since=2016-01-01&until=2026-09-04'
+
+# 按涨停原因反查：区间内原因包含“液冷”的事件
+# 使用 --data-urlencode，中文和原因中的 +、%、& 等字符均会正确编码。
+curl --get 'http://127.0.0.1:8808/api/v1/limit-events' \
+  --data-urlencode 'since=2026-09-01' \
+  --data-urlencode 'until=2026-09-04' \
+  --data-urlencode 'event_type=limit_up' \
+  --data-urlencode 'reason_keyword=液冷' \
+  --data-urlencode 'limit=100'
 
 # 软件定义的昨日非 ST 涨停表现指数
 curl 'http://127.0.0.1:8808/api/v1/limit-performance-indices?index_code=prev_non_st_limit_up_perf&since=2026-08-01&until=2026-09-04'

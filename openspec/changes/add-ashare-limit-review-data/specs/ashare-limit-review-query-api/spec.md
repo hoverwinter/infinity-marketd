@@ -11,6 +11,14 @@ The system SHALL expose ClickHouse-backed read-only endpoints for limit events, 
 - **WHEN** a client calls `GET /api/v1/limit-events` with market, symbol, and date bounds
 - **THEN** the response identifies the dates, event types, reasons, and themes for that stock
 
+#### Scenario: Search stored reasons by keyword
+- **WHEN** a client calls `GET /api/v1/limit-events` with `reason_keyword` and a valid date or date range
+- **THEN** the system matches a literal substring of the final stored `reason_text`, supporting Chinese and ignoring English letter case
+- **AND** surrounding whitespace is trimmed, an empty keyword applies no reason filter, and punctuation including `%`, `_`, `+` and quotes is literal rather than a wildcard or search expression
+- **AND** the reason condition is combined with other supplied filters using AND before deterministic ordering and pagination
+- **AND** unmatched queries return an empty array, and other review endpoints reject a nonempty reason keyword with HTTP 400
+- **AND** invalid UTF-8 keywords are rejected with HTTP 400
+
 #### Scenario: Query yesterday-limit-up outcomes
 - **WHEN** a client calls `GET /api/v1/limit-relay` with a trade date and sample group
 - **THEN** the response contains per-stock next-day statuses and normalized percentage values

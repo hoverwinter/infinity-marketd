@@ -70,6 +70,26 @@ func TestLimitPaginationAndValidationBeforeSQL(t *testing.T) {
 	}
 }
 
+func TestLimitReasonKeywordSQL(t *testing.T) {
+	q := querier.LimitQuery{Since: "2026-09-01", Until: "2026-09-04", Market: "sh", Symbol: "600506", EventType: "limit_up", Theme: "算力硬件", ReasonKeyword: "液冷+50%_O'Reilly", Limit: 2, Offset: 1}
+	stmt, args, err := limitReviewSQL("market", "events", q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgs := []any{q.Since, q.Until, q.Market, q.Symbol, q.EventType, q.Theme, q.Theme, q.ReasonKeyword}
+	if !reflect.DeepEqual(args, wantArgs) || strings.Contains(stmt, q.ReasonKeyword) {
+		t.Fatalf("keyword must be bound literally: %s %+v", stmt, args)
+	}
+	if !strings.Contains(stmt, "AND positionCaseInsensitiveUTF8(reason_text, ?) > 0 ORDER BY trade_date, event_type, market, symbol LIMIT 3 OFFSET 1") {
+		t.Fatalf("filter must precede pagination: %s", stmt)
+	}
+	q.ReasonKeyword = ""
+	stmt, args, err = limitReviewSQL("market", "events", q)
+	if err != nil || strings.Contains(stmt, "positionCaseInsensitiveUTF8") || len(args) != len(wantArgs)-1 {
+		t.Fatalf("empty keyword must preserve existing query: %s %+v %v", stmt, args, err)
+	}
+}
+
 func TestSummaryCountsRefreshUsesScalarDateBindings(t *testing.T) {
 	prev := "2026-09-03"
 	promotion := 0.25

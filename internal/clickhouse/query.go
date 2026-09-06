@@ -346,6 +346,10 @@ func limitReviewSQL(db, kind string, q querier.LimitQuery) (string, []any, error
 			args = append(args, q.Theme)
 		}
 	}
+	if q.ReasonKeyword != "" {
+		clauses = append(clauses, "positionCaseInsensitiveUTF8(reason_text, ?) > 0")
+		args = append(args, q.ReasonKeyword)
+	}
 	return fmt.Sprintf("SELECT %s FROM %s AS r FINAL WHERE %s ORDER BY %s LIMIT %d OFFSET %d", columns, table, strings.Join(clauses, " AND "), order, q.Limit+1, q.Offset), args, nil
 }
 

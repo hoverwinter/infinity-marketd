@@ -59,3 +59,8 @@
 - [x] 9.3 Publish verified enrichments with complete readback and expose a usable date-by-date review inventory
 - [x] 9.4 Verify regressions and document actual coverage and remaining unavailable or unverified facts without claiming completeness
 - [ ] 9.5 Finish historical fact completeness: recover missing materials and independently verify pending attribution, missing events, historical names and board differences (full corpus processing alone does not satisfy this)
+
+## 11. Reason Keyword Queries
+
+- [x] 11.1 Add literal reason keyword filtering to the event HTTP query and Go client, with parameterized filtering before pagination
+- [x] 11.2 Verify Chinese text, case-insensitive English, literal special characters, combined filters, empty results and pagination; document the API

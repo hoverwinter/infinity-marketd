@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -123,4 +124,71 @@ func TestLimitReviewClickHouseIntegration(t *testing.T) {
 	if err != nil || len(matrix.Rows) != 1 || len(matrix.Rows[0].Cells) != 2 || len(matrix.Days) != 2 || matrix.Rows[0].Cells[0].Events[0].ReasonText != "corrected previous reason" {
 		t.Fatalf("matrix: %+v %v", matrix, err)
 	}
+	t.Run("reason keyword", func(t *testing.T) {
+		// Filtering must use the replacement's final reason, never the original.
+		for keyword, count := range map[string]int{"original": 0, "CORRECTED": 1} {
+			result, err := s.LimitEvents(ctx, querier.LimitQuery{TradeDate: "2026-09-04", ReasonKeyword: keyword})
+			if err != nil || len(result.Rows) != count {
+				t.Fatalf("final reason %q: %+v %v", keyword, result, err)
+			}
+		}
+		fixtures := []model.LimitEvent{
+			{Symbol: "000010", ThemePrimary: "液冷", ThemeTags: []string{"液冷"}},
+			{Symbol: "000011", ReasonText: "高端装备"},
+			{Symbol: "000012", ReasonText: "液冷+AI算力+业绩增长", ThemePrimary: "算力硬件"},
+			{Symbol: "000013", ReasonText: "Ai算力+液冷", ThemePrimary: "其他", ThemeTags: []string{"算力硬件"}},
+			{Symbol: "000014", ReasonText: "增长50%_+O'Reilly"},
+			{Symbol: "000015", ReasonText: "液冷", EventType: "limit_down"},
+			{Symbol: "000016", TradeDate: prev, ReasonText: "液冷"},
+		}
+		for i := range fixtures {
+			f := &fixtures[i]
+			f.Market = "sz"
+			if f.TradeDate.IsZero() {
+				f.TradeDate = date
+			}
+			if f.EventType == "" {
+				f.EventType, f.CloseStatus, f.BoardCount = "limit_up", "sealed", 1
+			} else {
+				f.CloseStatus = "limit_down"
+			}
+			if f.ThemeTags == nil {
+				f.ThemeTags = []string{}
+			}
+		}
+		if err := s.InsertLimitEvents(ctx, fixtures); err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct {
+			name    string
+			query   querier.LimitQuery
+			symbols []string
+			more    bool
+		}{
+			{"Chinese and first page", querier.LimitQuery{TradeDate: "2026-09-04", EventType: "limit_up", ReasonKeyword: " 液冷 ", Limit: 1}, []string{"000012"}, true},
+			{"second page with theme and market", querier.LimitQuery{TradeDate: "2026-09-04", Market: "sz", Theme: "算力硬件", EventType: "limit_up", ReasonKeyword: "液冷", Limit: 1, Offset: 1}, []string{"000013"}, false},
+			{"range and English case", querier.LimitQuery{Since: "2026-09-03", Until: "2026-09-04", ReasonKeyword: "ai"}, []string{"000012", "000013"}, false},
+			{"range includes previous day", querier.LimitQuery{Since: "2026-09-03", Until: "2026-09-04", EventType: "limit_up", ReasonKeyword: "液冷"}, []string{"000016", "000012", "000013"}, false},
+			{"literal punctuation", querier.LimitQuery{TradeDate: "2026-09-04", ReasonKeyword: "%_+O'Reilly"}, []string{"000014"}, false},
+			{"no wildcard interpretation", querier.LimitQuery{TradeDate: "2026-09-04", ReasonKeyword: "%液冷%"}, []string{}, false},
+			{"empty reason does not match theme", querier.LimitQuery{TradeDate: "2026-09-04", Market: "sz", Symbol: "000010", ReasonKeyword: "液冷"}, []string{}, false},
+			{"blank keyword disables filter", querier.LimitQuery{TradeDate: "2026-09-04", Market: "sz", Symbol: "000010", ReasonKeyword: " \t "}, []string{"000010"}, false},
+			{"no matches", querier.LimitQuery{TradeDate: "2026-09-04", ReasonKeyword: "不存在的归因"}, []string{}, false},
+			{"offset past matches", querier.LimitQuery{TradeDate: "2026-09-04", EventType: "limit_up", ReasonKeyword: "液冷", Offset: 2}, []string{}, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				result, err := s.LimitEvents(ctx, tc.query)
+				if err != nil {
+					t.Fatal(err)
+				}
+				symbols := []string{}
+				for _, row := range result.Rows {
+					symbols = append(symbols, row.Symbol)
+				}
+				if !reflect.DeepEqual(symbols, tc.symbols) || result.HasMore != tc.more {
+					t.Fatalf("got %+v, want symbols=%v has_more=%v", result, tc.symbols, tc.more)
+				}
+			})
+		}
+	})
 }
